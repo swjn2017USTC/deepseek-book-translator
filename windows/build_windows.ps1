@@ -11,10 +11,13 @@ py -3.11 -m venv .venv-build
   pytest
 & .\.venv-build\Scripts\python.exe -m PyInstaller --clean --noconfirm .\windows\DeepSeekBookTranslator.spec
 $env:DEEPSEEK_SELF_TEST_REPORT = "$Repo\self-test-report.json"
-& .\dist\DeepSeekBookTranslator.exe --self-test
-$SelfTestExit = $LASTEXITCODE
+$Process = Start-Process `
+  -FilePath "$Repo\dist\DeepSeekBookTranslator.exe" `
+  -ArgumentList "--self-test" `
+  -Wait `
+  -PassThru
 Get-Content "$Repo\self-test-report.json"
 Remove-Item "$Repo\self-test-report.json"
-if ($SelfTestExit -ne 0) { exit $SelfTestExit }
+if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
 
 Write-Host "Built: $Repo\dist\DeepSeekBookTranslator.exe"

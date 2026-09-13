@@ -40,10 +40,13 @@ jobs:
         shell: pwsh
         run: |
           $env:DEEPSEEK_SELF_TEST_REPORT = "$PWD/self-test-report.json"
-          ./dist/DeepSeekBookTranslator.exe --self-test
-          $SelfTestExit = $LASTEXITCODE
+          $Process = Start-Process `
+            -FilePath "$PWD/dist/DeepSeekBookTranslator.exe" `
+            -ArgumentList "--self-test" `
+            -Wait `
+            -PassThru
           Get-Content ./self-test-report.json
-          if ($SelfTestExit -ne 0) { exit $SelfTestExit }
+          if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v7
