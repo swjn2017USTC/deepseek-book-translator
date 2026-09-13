@@ -11,6 +11,9 @@ requires-python = ">=3.9"
 [project.scripts]
 chapter-recovery = "chapter_recovery.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["chapter_recovery*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

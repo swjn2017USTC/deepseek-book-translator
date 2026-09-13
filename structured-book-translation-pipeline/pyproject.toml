@@ -13,6 +13,9 @@ dependencies = ["pydantic>=2,<3", "Pillow>=10,<12"]
 book-pipeline = "book_pipeline.cli:main"
 book-translator-gui = "book_pipeline.gui:main"
 
+[tool.setuptools.packages.find]
+include = ["book_pipeline*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
