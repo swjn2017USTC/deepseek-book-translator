@@ -35,6 +35,10 @@ jobs:
         shell: pwsh
         run: |
           python -m PyInstaller --clean --noconfirm ./windows/DeepSeekBookTranslator.spec
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
           $env:DEEPSEEK_SELF_TEST_REPORT = "$PWD/self-test-report.json"
           ./dist/DeepSeekBookTranslator.exe --self-test
           $SelfTestExit = $LASTEXITCODE
