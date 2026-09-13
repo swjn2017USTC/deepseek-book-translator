@@ -1,0 +1,61 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and test
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./chapter-structure-recovery-lab -e ./structured-book-translation-pipeline "pyinstaller>=6.10,<7" pytest
+          Push-Location chapter-structure-recovery-lab
+          python -m pytest -q
+          Pop-Location
+          Push-Location structured-book-translation-pipeline
+          python -m pytest -q
+          Pop-Location
+
+      - name: Build GUI executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --clean --noconfirm ./windows/DeepSeekBookTranslator.spec
+          $env:DEEPSEEK_SELF_TEST_REPORT = "$PWD/self-test-report.json"
+          ./dist/DeepSeekBookTranslator.exe --self-test
+          $SelfTestExit = $LASTEXITCODE
+          Get-Content ./self-test-report.json
+          if ($SelfTestExit -ne 0) { exit $SelfTestExit }
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekBookTranslator-Windows
+          path: dist/DeepSeekBookTranslator.exe
+          if-no-files-found: error
+
+      - name: Attach executable to tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:GITHUB_REF_NAME 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --generate-notes --title $env:GITHUB_REF_NAME
+          }
+          gh release upload $env:GITHUB_REF_NAME "dist/DeepSeekBookTranslator.exe#DeepSeekBookTranslator.exe" --clobber

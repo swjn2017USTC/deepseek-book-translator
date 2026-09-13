@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from .clean import clean_book, require_structure_gate
 from .config import load_config, resolve_path
+from .cover_generator import generate_typographic_cover
 from .io_utils import read_jsonl, write_json, write_jsonl
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
 from .provenance import require_fresh_cleaning
@@ -154,7 +157,11 @@ def initialize_project(
         "schema_version": 1,
         "book_id": book_id,
         "project_dir": str(project_path),
-        "chapter_root": str(DEFAULT_CHAPTER_ROOT),
+        # A frozen one-file executable is unpacked into a temporary directory.
+        # Store no temporary package path so the project remains portable to a
+        # later EXE session or a source checkout, both of which know their own
+        # default chapter package location.
+        "chapter_root": None if getattr(sys, "frozen", False) else str(DEFAULT_CHAPTER_ROOT),
         "chapter_config": str(chapter_config_path),
         "translation_config": str(translation_config_path),
         "structure_dir": str(structure_dir),
@@ -164,18 +171,13 @@ def initialize_project(
         "glossary": str(glossary_path),
     }
     write_json(manifest_path, manifest)
-    for filename in ("OMP_COVER_SEARCH_PLAN.md", "OMP_COVER_SEARCH_PROMPT.md", "OMP_NEW_BOOK_END_TO_END.md"):
-        source = ROOT / filename
-        if source.is_file():
-            content = source.read_text(encoding="utf-8").replace(
-                "{{PROJECT_DIR}}", str(project_path)
-            )
-            (project_path / filename).write_text(content, encoding="utf-8")
     for schema_name in ("cover_candidates.schema.json", "glossary_decision.schema.json"):
         schema = ROOT / "schemas" / schema_name
         if schema.is_file():
             (project_path / schema_name).write_text(schema.read_text(encoding="utf-8"), encoding="utf-8")
-    script = ROOT / "new_book.py"
+    # Keep the runbook portable; commands are meant to be run from the
+    # structured-book-translation-pipeline directory in a source checkout.
+    script = "new_book.py"
     runbook = f"""# {book_title_zh}：新书翻译运行说明
 
 1. 只做章节恢复和清理（不会调用模型）：
@@ -188,7 +190,7 @@ def initialize_project(
 
    然后重新执行 prepare。不得在裁决中创造标题文字。
 
-3. 若状态为 `needs_glossary_review`，让 OMP 审核 `glossary_candidates.jsonl`，完成
+3. 若状态为 `needs_glossary_review`，人工审核或让 coding agent 审核 `glossary_candidates.jsonl`，完成
    `glossary_decisions.template.jsonl` 的每一项后另存为 `glossary_decisions.jsonl`，再运行：
 
    `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
@@ -209,7 +211,11 @@ def initialize_project(
 
    `python3 {script} render --project {project_path}`
 
-7. 核对封面图片的来源与使用权后，用 `set-cover` 登记本地图片。
+7. 用本地排版生成器创建并登记封面：
+
+   `python3 {script} generate-cover --project {project_path} --theme auto`
+
+   如果改用自备图片，核对来源与使用权后再用 `set-cover` 登记。
 
 8. 生成带目录的 PDF 和带封面的 EPUB：
 
@@ -220,6 +226,18 @@ def initialize_project(
 
 
 def _run_chapter(project: Dict[str, Any], arguments: Sequence[str]) -> None:
+    if getattr(sys, "frozen", False):
+        # A one-file PyInstaller GUI cannot launch ``sys.executable -m``:
+        # sys.executable is the GUI executable itself. The bundled package is
+        # dispatched in-process instead.
+        from chapter_recovery.cli import main as chapter_main
+
+        # Windowed PyInstaller applications have no stdout/stderr stream, while
+        # the CLI prints a JSON summary. Capture it so that print() stays safe.
+        captured = io.StringIO()
+        with redirect_stdout(captured), redirect_stderr(captured):
+            chapter_main(list(arguments))
+        return
     chapter_root = Path(project.get("chapter_root") or DEFAULT_CHAPTER_ROOT).expanduser().resolve()
     if not (chapter_root / "chapter_recovery").is_dir():
         raise FileNotFoundError(f"Chapter recovery project not found: {chapter_root}")
@@ -450,6 +468,11 @@ def set_project_cover(
     )
 
 
+def generate_project_cover(project_path: Path, theme: str = "auto") -> Dict[str, Any]:
+    project = _project_manifest(project_path)
+    return generate_typographic_cover(Path(project["project_dir"]), theme=theme)
+
+
 def export_project(project_path: Path, output_format: str = "both") -> Dict[str, Any]:
     project = _project_manifest(project_path)
     formats = ("pdf", "epub") if output_format == "both" else (output_format,)
@@ -501,6 +524,13 @@ def build_parser() -> argparse.ArgumentParser:
     cover.add_argument("--license", dest="license_name", default="")
     cover.add_argument("--selected-by", default="user")
     cover.add_argument("--edition-evidence", default="")
+    generated_cover = commands.add_parser(
+        "generate-cover", help="generate and register a local typographic cover"
+    )
+    generated_cover.add_argument("--project", type=Path, required=True)
+    generated_cover.add_argument(
+        "--theme", choices=("auto", "ink", "ocean", "ember", "forest", "plum"), default="auto"
+    )
     export = commands.add_parser("export", help="convert the completed book to PDF/EPUB")
     export.add_argument("--project", type=Path, required=True)
     export.add_argument("--format", choices=("both", "pdf", "epub"), default="both")
@@ -538,6 +568,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             license_name=args.license_name, selected_by=args.selected_by,
             edition_evidence=args.edition_evidence,
         )
+    elif args.command == "generate-cover":
+        result = generate_project_cover(args.project, args.theme)
     elif args.command == "export":
         result = export_project(args.project, args.format)
     else:

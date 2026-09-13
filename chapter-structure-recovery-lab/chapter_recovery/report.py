@@ -268,7 +268,7 @@ def _write_report(
         "",
         f"- 结构节点：{len(active)}",
         f"- 目录条目：{len(toc_entries)}",
-        f"- 待 OMP/人工裁决：{len(packets)}",
+        f"- 待 coding agent/人工裁决：{len(packets)}",
         f"- 验证通过：{'是' if validation.get('ok') else '否'}",
         f"- 全局对齐：{validation.get('metrics', {}).get('toc_alignment_matched', 0)} 个匹配，"
         f"{validation.get('metrics', {}).get('toc_alignment_unmatched', 0)} 个未匹配",

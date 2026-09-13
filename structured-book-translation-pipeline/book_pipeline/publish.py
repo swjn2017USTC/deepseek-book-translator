@@ -22,6 +22,7 @@ from .translate import translation_status
 
 
 ALLOWED_COVER_RIGHTS = {
+    "generated",
     "public_domain",
     "licensed",
     "official_product_cover",
@@ -230,7 +231,7 @@ def load_registered_cover(project_dir: Path) -> Dict[str, Any]:
     manifest_path = project_dir.expanduser().resolve() / "cover" / "cover.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(
-            "EPUB export requires cover/cover.json; run set-cover after OMP cover search"
+            "EPUB export requires cover/cover.json; run generate-cover or set-cover"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     image = Path(str(manifest.get("image_path") or "")).expanduser().resolve()

@@ -7,10 +7,11 @@ name = "structured-book-translation-pipeline"
 version = "0.7.0"
 description = "Auditable chapter cleaning and resumable structured book translation"
 requires-python = ">=3.9"
-dependencies = ["pydantic>=2,<3"]
+dependencies = ["pydantic>=2,<3", "Pillow>=10,<12"]
 
 [project.scripts]
 book-pipeline = "book_pipeline.cli:main"
+book-translator-gui = "book_pipeline.gui:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

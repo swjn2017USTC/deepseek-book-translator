@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "OMP cover search candidates",
+  "title": "Cover search candidates",
   "type": "object",
   "required": ["schema_version", "book_id", "status", "candidates"],
   "properties": {

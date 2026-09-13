@@ -55,3 +55,20 @@ def test_run_chapter_uses_manifest_chapter_root(tmp_path, monkeypatch):
 def test_run_chapter_raises_when_chapter_root_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         workflow._run_chapter({"chapter_root": str(tmp_path)}, ["analyze"])
+
+
+def test_run_chapter_dispatches_in_process_when_frozen(monkeypatch):
+    recorded = {}
+
+    def recorder(arguments):
+        recorded["arguments"] = arguments
+
+    repository = Path(__file__).resolve().parents[2]
+    monkeypatch.syspath_prepend(str(repository / "chapter-structure-recovery-lab"))
+    import chapter_recovery.cli
+
+    monkeypatch.setattr(workflow.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(chapter_recovery.cli, "main", recorder)
+    workflow._run_chapter({}, ["analyze", "--config", "book.json"])
+
+    assert recorded["arguments"] == ["analyze", "--config", "book.json"]
