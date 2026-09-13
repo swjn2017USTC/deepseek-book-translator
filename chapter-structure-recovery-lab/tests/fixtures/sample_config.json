@@ -1,0 +1,9 @@
+{
+  "book_id": "sample-book",
+  "book_title": "Sample Book",
+  "input_json": "sample_ocr.json",
+  "output_dir": "../../runs/sample",
+  "toc_search_pages": [0, 2],
+  "toc_alignment_window": 1,
+  "review_threshold": 0.9
+}

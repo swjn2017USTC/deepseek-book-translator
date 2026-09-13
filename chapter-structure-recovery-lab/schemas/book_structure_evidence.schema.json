@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/chapter-recovery/book-structure-evidence.schema.json",
+  "title": "Chapter recovery compressed book structure evidence (P02)",
+  "description": "Compressed whole-book evidence packet as serialized in evidence/book_structure_evidence.json (P02 deterministic evidence layer).",
+  "type": "object",
+  "required": [
+    "schema_version", "metadata", "toc_entries", "bookmark_tree",
+    "numbering_summary", "style_clusters", "zones", "repeated_headers",
+    "candidate_count", "page_density", "candidates"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "metadata": {
+      "type": "object",
+      "required": [
+        "schema_version", "book_id", "book_title", "generated_by",
+        "package_version", "python_version", "input_sha256", "pdf_sha256",
+        "legacy_profile_used", "pdf_evidence_ok", "pdf_reason",
+        "page_count", "candidate_count", "source_counts"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "book_id": {"type": "string", "minLength": 1},
+        "book_title": {"type": "string"},
+        "generated_by": {"type": "string"},
+        "package_version": {"type": "string"},
+        "python_version": {"type": "string"},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "pdf_sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "legacy_profile_used": {"type": "boolean"},
+        "pdf_evidence_ok": {"type": "boolean"},
+        "pdf_reason": {"enum": ["ok", "pdf_missing", "fitz_unavailable", "pdf_corrupt"]},
+        "page_count": {"type": "integer", "minimum": 0},
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "source_counts": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        }
+      },
+      "additionalProperties": false
+    },
+    "toc_entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "page_label", "kind", "source_page", "provenance"],
+        "properties": {
+          "title": {"type": "string"},
+          "page_label": {"type": "string"},
+          "print_page": {"type": ["integer", "null"]},
+          "kind": {"type": "string"},
+          "source_page": {"type": "integer"},
+          "id": {"type": "string"},
+          "provenance": {"type": "string"}
+        }
+      }
+    },
+    "bookmark_tree": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/bookmarkNode"}
+    },
+    "numbering_summary": {
+      "type": "object",
+      "required": ["families", "representative_tokens"],
+      "properties": {
+        "families": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "representative_tokens": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "style_clusters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["level", "count", "sample_block_ids"],
+        "properties": {
+          "level": {"type": "integer"},
+          "count": {"type": "integer", "minimum": 0},
+          "sample_block_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "zones": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["frontmatter", "mainmatter", "notes", "bibliography", "index"]
+      }
+    },
+    "repeated_headers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["normalized_title", "count", "first_page_json", "label"],
+        "properties": {
+          "normalized_title": {"type": "string"},
+          "count": {"type": "integer", "minimum": 0},
+          "first_page_json": {"type": "integer"},
+          "label": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "candidate_count": {"type": "integer", "minimum": 0},
+    "page_density": {"type": "number", "minimum": 0},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "page_json", "exact_text", "primary_sources"],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^cand-"},
+          "page_json": {"type": ["integer", "null"]},
+          "exact_text": {"type": "string", "minLength": 1},
+          "primary_sources": {
+            "type": "array",
+            "items": {
+              "enum": ["paddle", "text_support", "bookmark", "font"]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "bookmarkNode": {
+      "type": "object",
+      "required": ["level", "title", "page", "children"],
+      "properties": {
+        "level": {"type": "integer", "minimum": 1},
+        "title": {"type": "string"},
+        "page": {"type": "integer"},
+        "children": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/bookmarkNode"}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

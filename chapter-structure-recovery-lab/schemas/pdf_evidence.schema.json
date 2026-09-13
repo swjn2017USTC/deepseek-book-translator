@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/chapter-recovery/pdf-evidence.schema.json",
+  "title": "Chapter recovery PDF native evidence (P02)",
+  "description": "PdfEvidenceResult as serialized in evidence/pdf_evidence.json (P02 deterministic evidence layer).",
+  "type": "object",
+  "required": ["ok", "reason", "page_count", "bookmarks", "pages"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "reason": {"enum": ["ok", "pdf_missing", "fitz_unavailable", "pdf_corrupt"]},
+    "page_count": {"type": "integer", "minimum": 0},
+    "bookmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["level", "title", "page"],
+        "properties": {
+          "level": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "page": {"type": "integer"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "page_index", "page_width", "page_height", "native_char_count",
+          "span_count", "font_size_p10", "font_size_median", "font_size_p90",
+          "top_font_families", "bold_span_count", "italic_span_count", "large_lines"
+        ],
+        "properties": {
+          "page_index": {"type": "integer", "minimum": 0},
+          "page_width": {"type": "number"},
+          "page_height": {"type": "number"},
+          "native_char_count": {"type": "integer", "minimum": 0},
+          "span_count": {"type": "integer", "minimum": 0},
+          "font_size_p10": {"type": "number", "minimum": 0},
+          "font_size_median": {"type": "number", "minimum": 0},
+          "font_size_p90": {"type": "number", "minimum": 0},
+          "top_font_families": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": [{"type": "string"}, {"type": "integer"}]
+            }
+          },
+          "bold_span_count": {"type": "integer", "minimum": 0},
+          "italic_span_count": {"type": "integer", "minimum": 0},
+          "large_lines": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "required": [
+                "page_index", "text", "bbox", "font_size",
+                "font_family", "is_bold", "is_italic"
+              ],
+              "properties": {
+                "page_index": {"type": "integer", "minimum": 0},
+                "text": {"type": "string", "minLength": 1},
+                "bbox": {
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "items": {"type": "number"}
+                },
+                "font_size": {"type": "number", "minimum": 0},
+                "font_family": {"type": "string"},
+                "is_bold": {"type": "boolean"},
+                "is_italic": {"type": "boolean"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

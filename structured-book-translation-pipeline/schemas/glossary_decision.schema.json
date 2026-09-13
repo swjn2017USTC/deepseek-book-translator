@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Glossary candidate decision",
+  "type": "object",
+  "required": ["candidate_id", "decision"],
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {"type": "string", "pattern": "^glo-[0-9a-f]{12}$"},
+    "decision": {"enum": ["include", "reject", "needs_human"]},
+    "translation": {"type": "string"},
+    "category": {"type": "string"},
+    "alternatives": {"type": "array", "items": {"type": "string"}},
+    "note": {"type": "string"},
+    "reason": {"type": "string"},
+    "evidence": {"type": "array", "items": {"type": "string"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "include"}}},
+      "then": {"required": ["translation", "evidence"]}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "reject"}}},
+      "then": {"required": ["reason"]}
+    }
+  ]
+}

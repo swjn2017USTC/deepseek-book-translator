@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OMP cover search candidates",
+  "type": "object",
+  "required": ["schema_version", "book_id", "status", "candidates"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "book_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["PASS", "NEEDS_USER_REVIEW", "NO_SUITABLE_COVER"]},
+    "selected_candidate_id": {"type": ["string", "null"]},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "source_page_url", "source_image_url", "source_type", "confidence", "edition_evidence", "rights_status"],
+        "properties": {
+          "candidate_id": {"type": "string"},
+          "source_page_url": {"type": "string", "format": "uri"},
+          "source_image_url": {"type": "string", "format": "uri"},
+          "source_type": {"enum": ["publisher", "author", "institution", "wikimedia", "internet_archive", "open_library", "retailer", "other"]},
+          "title": {"type": "string"},
+          "author": {"type": "string"},
+          "isbn_or_edition": {"type": "string"},
+          "width": {"type": ["integer", "null"], "minimum": 1},
+          "height": {"type": ["integer", "null"], "minimum": 1},
+          "rights_status": {"enum": ["public_domain", "licensed", "official_product_cover", "user_approval_required", "unknown"]},
+          "license": {"type": "string"},
+          "edition_evidence": {"type": "string", "minLength": 1},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "decision": {"enum": ["selected", "rejected", "needs_review"]},
+          "reason": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

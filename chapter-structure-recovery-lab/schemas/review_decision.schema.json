@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/chapter-recovery/review-decision.schema.json",
+  "title": "Chapter recovery review decision",
+  "type": "object",
+  "required": ["candidate_id", "decision", "reason_code", "evidence_refs"],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "decision": {
+      "enum": ["accept", "reject", "change_level", "change_kind", "merge_with_previous", "needs_human"]
+    },
+    "reason_code": {
+      "enum": ["same_style", "numbering_parent", "running_header", "caption", "body_sentence", "apparatus_repeat", "split_title", "toc_evidence", "page_evidence", "insufficient_evidence", "other_verified"]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "level": {"type": "integer", "minimum": 2, "maximum": 6},
+    "kind": {
+      "enum": ["frontmatter", "part", "part_intro", "chapter", "section", "backmatter", "toc_entry"]
+    },
+    "merge_with_node_id": {"type": "string", "pattern": "^node-"}
+  },
+  "oneOf": [
+    {
+      "properties": {"decision": {"enum": ["accept", "reject", "needs_human"]}},
+      "not": {"anyOf": [{"required": ["level"]}, {"required": ["kind"]}, {"required": ["merge_with_node_id"]}]}
+    },
+    {
+      "properties": {"decision": {"const": "change_level"}},
+      "required": ["level"],
+      "not": {"anyOf": [{"required": ["kind"]}, {"required": ["merge_with_node_id"]}]}
+    },
+    {
+      "properties": {"decision": {"const": "change_kind"}},
+      "required": ["kind"],
+      "not": {"anyOf": [{"required": ["level"]}, {"required": ["merge_with_node_id"]}]}
+    },
+    {
+      "properties": {"decision": {"const": "merge_with_previous"}},
+      "required": ["merge_with_node_id"],
+      "not": {"anyOf": [{"required": ["level"]}, {"required": ["kind"]}]}
+    }
+  ],
+  "additionalProperties": false
+}

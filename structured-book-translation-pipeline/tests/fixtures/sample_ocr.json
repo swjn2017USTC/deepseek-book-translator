@@ -1,0 +1,31 @@
+[
+  {
+    "prunedResult": {
+      "parsing_res_list": [
+        {"block_id": 1, "block_order": 1, "block_label": "paragraph_title", "block_content": "1 First Chapter", "block_bbox": [80, 100, 700, 145]},
+        {"block_id": 2, "block_order": 2, "block_label": "text", "block_content": "A cross-page para-", "block_bbox": [80, 180, 700, 240]},
+        {"block_id": 3, "block_order": 3, "block_label": "footer", "block_content": "Publisher footer", "block_bbox": [80, 1100, 700, 1140]},
+        {"block_id": 4, "block_order": 4, "block_label": "number", "block_content": "1", "block_bbox": [380, 1160, 420, 1190]}
+      ]
+    }
+  },
+  {
+    "prunedResult": {
+      "parsing_res_list": [
+        {"block_id": 1, "block_order": 1, "block_label": "header", "block_content": "FIRST CHAPTER", "block_bbox": [80, 20, 700, 50]},
+        {"block_id": 2, "block_order": 2, "block_label": "text", "block_content": "graph continues here¹.", "block_bbox": [80, 100, 700, 170]},
+        {"block_id": 3, "block_order": 3, "block_label": "image", "block_content": "", "block_bbox": [120, 250, 650, 600]},
+        {"block_id": 4, "block_order": 4, "block_label": "footnote", "block_content": "1 The source footnote.", "block_bbox": [80, 980, 700, 1060]}
+      ]
+    }
+  },
+  {
+    "prunedResult": {
+      "parsing_res_list": [
+        {"block_id": 1, "block_order": 1, "block_label": "paragraph_title", "block_content": "A real internal section", "block_bbox": [80, 100, 700, 145]},
+        {"block_id": 2, "block_order": 2, "block_label": "text", "block_content": "A complete paragraph.", "block_bbox": [80, 180, 700, 250]},
+        {"block_id": 3, "block_order": 3, "block_label": "table", "block_content": "| A | B |\n|---|---|\n| one | two |", "block_bbox": [80, 300, 700, 500]}
+      ]
+    }
+  }
+]

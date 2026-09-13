@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Old translation migration decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidate_id", "decision", "reason"],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "decision": {
+      "enum": [
+        "accept_mapping",
+        "reject_mapping",
+        "link_existing_heading",
+        "link_source_node",
+        "leave_unmapped",
+        "keep_unchanged",
+        "demote_to_body",
+        "needs_human"
+      ]
+    },
+    "reason": {"type": "string", "minLength": 1},
+    "existing_heading_id": {"type": "string", "minLength": 1},
+    "node_id": {"type": "string", "minLength": 1},
+    "target_level": {"type": "integer", "minimum": 1, "maximum": 6}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "link_existing_heading"}}},
+      "then": {"required": ["existing_heading_id"]},
+      "else": {"not": {"required": ["existing_heading_id"]}}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "link_source_node"}}},
+      "then": {"required": ["node_id"]},
+      "else": {"not": {"required": ["node_id"]}}
+    },
+    {
+      "if": {"required": ["target_level"]},
+      "then": {"properties": {"decision": {"const": "accept_mapping"}}}
+    }
+  ]
+}

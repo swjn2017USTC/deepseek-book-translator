@@ -1,0 +1,43 @@
+[
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"doc_title","block_content":"# Sample Book","block_bbox":[100,150,700,250],"block_order":1}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"paragraph_title","block_content":"## Contents","block_bbox":[100,150,250,180],"block_order":1},
+    {"block_id":2,"block_label":"content","block_content":"Introduction 1     1 First Chapter 3     Conclusion 6","block_bbox":[100,250,700,600],"block_order":2}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"header","block_content":"Introduction","block_bbox":[150,150,350,180],"block_order":1},
+    {"block_id":2,"block_label":"text","block_content":"Opening paragraph.","block_bbox":[100,300,700,500],"block_order":2},
+    {"block_id":3,"block_label":"number","block_content":"1","block_bbox":[680,1180,710,1200]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"paragraph_title","block_content":"#### A hidden section","block_bbox":[100,300,350,330],"block_order":1},
+    {"block_id":2,"block_label":"text","block_content":"Section paragraph.","block_bbox":[100,360,700,700],"block_order":2},
+    {"block_id":3,"block_label":"number","block_content":"2","block_bbox":[150,70,180,90]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"text","block_content":"1","block_bbox":[150,130,180,180],"block_order":1},
+    {"block_id":2,"block_label":"paragraph_title","block_content":"## First Chapter","block_bbox":[200,150,650,210],"block_order":2},
+    {"block_id":3,"block_label":"text","block_content":"Chapter paragraph.","block_bbox":[100,330,700,800],"block_order":3},
+    {"block_id":4,"block_label":"number","block_content":"3","block_bbox":[680,1180,710,1200]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"paragraph_title","block_content":"##### Another hidden section","block_bbox":[100,300,400,330],"block_order":1},
+    {"block_id":2,"block_label":"text","block_content":"More text.","block_bbox":[100,360,700,700],"block_order":2},
+    {"block_id":3,"block_label":"number","block_content":"4","block_bbox":[150,70,180,90]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"text","block_content":"Continuation.","block_bbox":[100,150,700,700],"block_order":1},
+    {"block_id":2,"block_label":"number","block_content":"5","block_bbox":[680,70,710,90]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"header","block_content":"Conclusion","block_bbox":[150,150,350,180],"block_order":1},
+    {"block_id":2,"block_label":"text","block_content":"Final paragraph.","block_bbox":[100,300,700,700],"block_order":2},
+    {"block_id":3,"block_label":"number","block_content":"6","block_bbox":[680,1180,710,1200]}
+  ]}},
+  {"prunedResult":{"parsing_res_list":[
+    {"block_id":1,"block_label":"paragraph_title","block_content":"### Tables","block_bbox":[100,150,300,180],"block_order":1},
+    {"block_id":2,"block_label":"content","block_content":"Table 1 A misleading table-list entry 20","block_bbox":[100,300,700,700],"block_order":2}
+  ]}}
+]

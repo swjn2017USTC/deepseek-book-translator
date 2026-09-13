@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/chapter-recovery/heading-candidates.schema.json",
+  "title": "Chapter recovery heading candidate (evidence JSONL line)",
+  "description": "One merged heading candidate as serialized in heading_candidates.jsonl (P02 deterministic evidence layer).",
+  "type": "object",
+  "required": ["candidate_id", "source_block_ids", "exact_text", "page_json", "evidence_refs"],
+  "properties": {
+    "candidate_id": {"type": "string", "pattern": "^cand-"},
+    "source_block_ids": {"type": "array", "items": {"type": "string"}},
+    "exact_text": {"type": "string", "minLength": 1},
+    "page_json": {"type": ["integer", "null"]},
+    "page_print": {"type": ["integer", "null"]},
+    "bbox": {
+      "anyOf": [
+        {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+        {"type": "null"}
+      ]
+    },
+    "zone": {
+      "enum": ["frontmatter", "mainmatter", "notes", "bibliography", "index"]
+    },
+    "paddle_label": {
+      "anyOf": [
+        {"enum": ["doc_title", "paragraph_title", "header", "text"]},
+        {"type": "null"}
+      ]
+    },
+    "paddle_relevel": {"const": null},
+    "pdf_bookmark": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["level", "title", "page"],
+          "properties": {
+            "level": {"type": "integer"},
+            "title": {"type": "string"},
+            "page": {"type": "integer"}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "native_font": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["family", "size", "bold", "italic"],
+          "properties": {
+            "family": {"type": "string"},
+            "size": {"type": "number"},
+            "bold": {"type": "boolean"},
+            "italic": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "numbering": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["token", "path", "depth", "family"],
+          "properties": {
+            "token": {"type": "string"},
+            "path": {"type": "array", "items": {"type": "string"}},
+            "depth": {"type": "integer"},
+            "family": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "toc_matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["toc_entry_id", "title", "page_label", "match_score", "match_kind"],
+        "properties": {
+          "toc_entry_id": {"type": "string"},
+          "title": {"type": "string"},
+          "page_label": {"type": "string"},
+          "match_score": {"type": "number", "minimum": 0, "maximum": 1},
+          "match_kind": {"enum": ["exact", "fuzzy"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "repetition": {
+      "type": "object",
+      "required": ["count", "nearby_count"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "nearby_count": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "before_context": {"type": ["string", "null"]},
+    "after_context": {"type": ["string", "null"]},
+    "deterministic_suppressions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "additionalProperties": false
+}
