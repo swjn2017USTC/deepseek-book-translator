@@ -10,6 +10,8 @@
 
 仓库只包含程序、schema 和合成测试样例，没有真实书籍 OCR、译文、封面、运行记录、API key 或私人配置。书籍项目、译文和导出物默认在 Git 忽略范围内。
 
+第一次使用可先看 [三页合成 OCR 入门样例](examples/README.md)。本项目代码采用 [MIT 许可证](LICENSE)；书籍原文、译文和用户提供的封面不因本仓库许可证而自动获得使用授权。贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
+
 ## 能力
 
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
@@ -54,7 +56,7 @@ python3 new_book.py prepare --project books/my-book
 python3 new_book.py status --project books/my-book
 ```
 
-`prepare` 先运行章节恢复，再检查 `validation.json` 和 `review_packets.jsonl`。返回 `needs_structure_review` 时，按项目中的 `RUNBOOK.md` 完成结构裁决；返回 `needs_glossary_review` 时，审核术语候选并编译决定。门禁通过后设置自己的 key：
+`prepare` 先运行章节恢复，再检查 `validation.json` 和 `review_packets.jsonl`。返回 `needs_structure_review` 时，按项目中的 `RUNBOOK.md` 完成结构裁决；返回 `needs_glossary_review` 时，审核术语候选并编译决定。也可以启动 GUI，在“章节审核”“术语审核”窗口逐项查看证据、保存裁决、编译并重新准备。门禁通过后设置自己的 key：
 
 ```bash
 export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
@@ -94,12 +96,12 @@ Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 - OCR JSON 文件选择；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
 - DeepSeek 模型及隐藏显示的 API key 输入；
-- 初始化、准备、自动封面、零网络预检、分批翻译、状态、Markdown 渲染和 PDF/EPUB 导出按钮；
+- 初始化、准备、逐项章节/术语审核、自动封面、零网络预检、分批翻译、状态、Markdown 渲染和 PDF/EPUB 导出按钮；
 - 运行日志和项目目录快捷打开。
 
 ### 下载预编译 EXE
 
-每次推送 `main` 后，GitHub Actions 的 **Build Windows EXE** 工作流会在真实 `windows-latest` 环境中运行测试、构建并执行 `--self-test`。在仓库的 **Actions → Build Windows EXE → Artifacts** 下载 `DeepSeekBookTranslator-Windows` 并解压即可。
+每次推送 `main` 后，GitHub Actions 的 **Build Windows EXE** 工作流会在真实 `windows-latest` 环境中运行测试、构建、GUI 自检及冻结 EXE 的合成 OCR 离线流程检查。在仓库的 **Actions → Build Windows EXE → Artifacts** 下载 `DeepSeekBookTranslator-Windows` 并解压即可。
 
 带 `v*` 标签的构建还会把 EXE 附加到对应 GitHub Release。当前程序没有代码签名证书，Windows SmartScreen 可能显示“未知发布者”；可以检查对应提交的 Actions 构建记录后再运行。
 
@@ -112,7 +114,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\windows\build_windows.ps1
 ```
 
-生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目和 Pillow；PDF/EPUB 所需的 Pandoc、XeLaTeX 与字体仍需另行安装。
+生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目、三页合成样例和 Pillow；PDF/EPUB 所需的 Pandoc、XeLaTeX 与字体仍需另行安装。Windows PDF 默认使用 SimSun、Microsoft YaHei 和 Consolas 字体。
 
 也可以在有桌面环境的 Python 安装中直接启动 GUI：
 
@@ -144,9 +146,10 @@ GUI 输入的 key 只放在当前进程内存和环境中，不保存到书籍�
 (cd chapter-structure-recovery-lab && python3 -m pytest -q)
 (cd structured-book-translation-pipeline && python3 -m pytest -q)
 python3 deepseek_book_translator_gui.py --self-test
+python3 deepseek_book_translator_gui.py --offline-smoke
 ```
 
-真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
+`--offline-smoke` 会在临时目录使用合成 OCR，经过初始化、章节恢复、术语门禁与裁决、封面、零网络预检、模拟翻译和 Markdown 渲染，并检查模拟译文无法进入正式导出。它不联网、不保存 key，也不验证真实 DeepSeek 翻译或 PDF/EPUB 工具。真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
 
 ## GitHub 发布
 
@@ -156,11 +159,9 @@ python3 deepseek_book_translator_gui.py --self-test
 git push origin main
 ```
 
-创建版本标签会触发 Windows EXE 构建并创建或更新对应 Release：
+创建新的版本标签会触发 Windows EXE 构建并创建或更新对应 Release，例如：
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
-
-本仓库暂未附加许可证。公开代码不等于授予再使用权；仓库所有者应在确认全部代码权属后选择许可证。

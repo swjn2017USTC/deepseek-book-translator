@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Any, Dict, Iterable, List, Optional
 import zipfile
@@ -446,13 +447,21 @@ def _latex_escape(value: str) -> str:
     return "".join(replacements.get(character, character) for character in value)
 
 
-def build_book_tex(title: str, author: str, tocdepth: int = 3) -> str:
+def build_book_tex(title: str, author: str, tocdepth: int = 3, font_profile: str = "mac") -> str:
     escaped_title = _latex_escape(title.replace("（", "(").replace("）", ")"))
     escaped_author = _latex_escape(author)
+    fonts = {
+        "mac": ("Songti SC", "Heiti SC", "Menlo"),
+        "windows": ("SimSun", "Microsoft YaHei", "Consolas"),
+        "linux": ("Noto Serif CJK SC", "Noto Sans CJK SC", "DejaVu Sans Mono"),
+    }
+    if font_profile not in fonts:
+        raise ValueError(f"Unknown PDF font profile: {font_profile}")
+    main_font, sans_font, mono_font = fonts[font_profile]
     return rf"""\documentclass[UTF8,oneside,12pt,fontset=none]{{ctexbook}}
-\setCJKmainfont{{Songti SC}}
-\setCJKsansfont{{Heiti SC}}
-\setCJKmonofont{{Menlo}}
+\setCJKmainfont{{{main_font}}}
+\setCJKsansfont{{{sans_font}}}
+\setCJKmonofont{{{mono_font}}}
 \usepackage{{amsmath,amssymb}}
 \usepackage{{longtable,booktabs,array,calc}}
 \usepackage{{graphicx}}
@@ -516,7 +525,8 @@ def _build_pdf_from_tex(
         postprocess_body_tex(body_tex.read_text(encoding="utf-8")), encoding="utf-8"
     )
     book_tex.write_text(
-        build_book_tex(title, author, tocdepth=int(settings["pdf"]["tocdepth"])),
+        build_book_tex(title, author, tocdepth=int(settings["pdf"]["tocdepth"]),
+                       font_profile="windows" if os.name == "nt" else "mac" if sys.platform == "darwin" else "linux"),
         encoding="utf-8",
     )
 

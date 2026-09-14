@@ -20,6 +20,21 @@ for package_root in (
 def main() -> int:
     from book_pipeline.gui import main as gui_main, self_test
 
+    if "--offline-smoke" in sys.argv:
+        from book_pipeline.offline_smoke import run_offline_smoke
+
+        try:
+            result = run_offline_smoke()
+            exit_code = 0
+        except Exception as exc:
+            result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            exit_code = 1
+        report_path = os.environ.get("DEEPSEEK_OFFLINE_SMOKE_REPORT")
+        if report_path:
+            Path(report_path).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        if getattr(sys, "stdout", None) is not None:
+            print(json.dumps(result, ensure_ascii=False))
+        return exit_code
     if "--self-test" in sys.argv:
         try:
             result = self_test()

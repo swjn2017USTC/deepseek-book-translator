@@ -20,4 +20,14 @@ Get-Content "$Repo\self-test-report.json"
 Remove-Item "$Repo\self-test-report.json"
 if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
 
+$env:DEEPSEEK_OFFLINE_SMOKE_REPORT = "$Repo\offline-smoke-report.json"
+$Process = Start-Process `
+  -FilePath "$Repo\dist\DeepSeekBookTranslator.exe" `
+  -ArgumentList "--offline-smoke" `
+  -Wait `
+  -PassThru
+Get-Content "$Repo\offline-smoke-report.json"
+Remove-Item "$Repo\offline-smoke-report.json"
+if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
+
 Write-Host "Built: $Repo\dist\DeepSeekBookTranslator.exe"

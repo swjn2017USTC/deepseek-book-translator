@@ -8,6 +8,7 @@ __pycache__/
 build/
 dist/
 self-test-report.json
+offline-smoke-report.json
 .env
 .env.*
 !.env.example

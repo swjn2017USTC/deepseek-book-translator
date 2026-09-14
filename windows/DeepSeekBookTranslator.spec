@@ -12,6 +12,7 @@ chapter = repo / "chapter-structure-recovery-lab"
 
 hiddenimports = collect_submodules("book_pipeline") + collect_submodules("chapter_recovery")
 datas = [
+    (str(repo / "examples" / "sample_ocr.json"), "examples"),
     (str(translation / "schemas"), "schemas"),
     (str(translation / "pandoc_lua"), "pandoc_lua"),
 ]

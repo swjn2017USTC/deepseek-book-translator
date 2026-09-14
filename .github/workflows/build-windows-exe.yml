@@ -48,6 +48,20 @@ jobs:
           Get-Content ./self-test-report.json
           if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
 
+      - name: Synthetic workflow in frozen executable
+        shell: pwsh
+        run: |
+          $env:DEEPSEEK_OFFLINE_SMOKE_REPORT = "$PWD/offline-smoke-report.json"
+          $Process = Start-Process `
+            -FilePath "$PWD/dist/DeepSeekBookTranslator.exe" `
+            -ArgumentList "--offline-smoke" `
+            -Wait `
+            -PassThru
+          Get-Content ./offline-smoke-report.json
+          if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
+          $Report = Get-Content ./offline-smoke-report.json | ConvertFrom-Json
+          if ($Report.status -ne 'ok' -or -not $Report.gui_review_constructed -or -not $Report.fake_export_blocked) { exit 1 }
+
       - name: Upload executable artifact
         uses: actions/upload-artifact@v7
         with:

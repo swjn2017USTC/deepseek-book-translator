@@ -11,6 +11,8 @@ import subprocess
 import threading
 from typing import Any, Callable, Dict
 
+from .review_gui import ReviewWindow
+
 from .workflow import (
     export_project,
     generate_project_cover,
@@ -126,9 +128,11 @@ class TranslatorGUI:
         actions = (
             ("1 初始化项目", self.create_project),
             ("2 准备/检查", lambda: self._run("准备项目", lambda: prepare_project(self._project()))),
-            ("3 生成封面", lambda: self._run("生成封面", lambda: generate_project_cover(self._project(), self.values["theme"].get()))),
-            ("4 零网络预检", self.preflight),
-            ("5 翻译", self.translate),
+            ("3 章节审核", lambda: self.open_review("structure")),
+            ("4 术语审核", lambda: self.open_review("glossary")),
+            ("5 生成封面", lambda: self._run("生成封面", lambda: generate_project_cover(self._project(), self.values["theme"].get()))),
+            ("6 零网络预检", self.preflight),
+            ("7 翻译", self.translate),
             ("状态", lambda: self._run("读取状态", lambda: project_status(self._project()))),
             ("渲染 Markdown", lambda: self._run("渲染", lambda: render_project(self._project()))),
             ("导出 PDF+EPUB", lambda: self._run("导出", lambda: export_project(self._project(), "both"))),
@@ -149,7 +153,15 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(14, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("填写书籍信息后先初始化。遇到结构或术语审核时，可使用仓库中的 CODING_AGENT_PROMPT.md。\n")
+        self._write("填写书籍信息后先初始化，再准备。遇到结构或术语门禁，请打开对应审核窗口逐项裁决。\n")
+
+    def open_review(self, kind: str) -> None:
+        from tkinter import messagebox
+
+        try:
+            ReviewWindow(self.root, self._project(), kind, self._run)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            messagebox.showerror("无法打开审核", str(exc))
 
     def _entry_row(self, parent: Any, row: int, label: str, key: str) -> None:
         self.ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=4)
