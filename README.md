@@ -90,9 +90,51 @@ Agent 会先从书名页、版权页和目录推断书名、作者、语言、�
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 
-支持标准 Skill 的 agent 可安装 [`skills/deepseek-book-translation`](skills/deepseek-book-translation/SKILL.md)，安装方法和本地私有版的配置边界见 [Agent Skill 方案](docs/AGENT_SKILLS.md)。新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。
+新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。
 
-## 方式三：Windows EXE
+## 方式三：Agent Skill
+
+仓库内置 OpenAI/Codex Agent Skill：[`skills/deepseek-book-translation`](skills/deepseek-book-translation/SKILL.md)。它保留标准的 `SKILL.md`、`agents/openai.yaml` 和按需加载的 `references/`，用于让 agent 自动识别并执行本仓库的完整翻译流程。
+
+推荐先预览 Skill 内容，再安装到 Codex 的用户级 Skill 目录：
+
+```bash
+gh skill preview swjn2017USTC/deepseek-book-translator deepseek-book-translation
+gh skill install swjn2017USTC/deepseek-book-translator \
+  deepseek-book-translation \
+  --agent codex \
+  --scope user
+```
+
+也可以通过 skills.sh 的安装器选择 Codex：
+
+```bash
+npx skills add swjn2017USTC/deepseek-book-translator
+```
+
+如果本机 GitHub CLI 尚不支持 `gh skill`，可克隆仓库后手动安装：
+
+```bash
+git clone https://github.com/swjn2017USTC/deepseek-book-translator.git
+mkdir -p ~/.codex/skills
+cp -R deepseek-book-translator/skills/deepseek-book-translation ~/.codex/skills/
+```
+
+安装后重新启动 Codex 会话，设置让 Codex 进程可以继承的 `DEEPSEEK_API_KEY`，然后直接提出任务，例如：
+
+```text
+使用 $deepseek-book-translation，把 /绝对路径/book.json 翻译成中文书籍项目。请从书中证据推断元数据，并保留所有结构与术语审核门禁。
+```
+
+Skill 会定位本仓库，读取工作流说明，依次完成初始化、章节恢复、结构与术语审核、零网络预检、分批翻译、QA、封面和出版物导出。它不会保存或提交 API key；证据不足的书籍信息、结构和术语会保持待审核状态。通过 `gh skill` 安装的版本可使用下面的命令检查并更新：
+
+```bash
+gh skill update deepseek-book-translation
+```
+
+Skill 的文件结构、配置边界和本地私有版的区别见 [Agent Skill 方案](docs/AGENT_SKILLS.md)。
+
+## 方式四：Windows EXE
 
 Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 
