@@ -19,6 +19,9 @@ LABEL_NUMBER = re.compile(
     re.I,
 )
 SECTION_SYMBOL = re.compile(r"^§\s*([0-9Il|]+)$", re.I)
+# Label families whose headings stay headings even when the title ends with a
+# question mark ("Chapter I: How did the Rich Countries Really Become Rich?").
+TITLE_LABEL_FAMILIES = {"part", "chapter", "book", "volume", "teil", "kapitel"}
 
 
 @dataclass(frozen=True)
@@ -74,9 +77,38 @@ def rejection_reason(text: str) -> Optional[str]:
     words = value.split()
     if len(words) > 24:
         return "sentence_like"
+    # A line opening with a structural label is a heading by construction, even
+    # when its title ends in a question mark ("Chapter I: How did the Rich
+    # Countries Really Become Rich?").  Live regression:
+    # kicking-away-the-ladder chapter 1 was rejected as a quotation and left the
+    # macro TOC entry unaligned.
+    parsed = numbering(value)
+    if parsed is not None and parsed.family in TITLE_LABEL_FAMILIES:
+        return None
     if value.endswith(("?", "!", "。", "？", "！")) and len(words) > 7:
         return "quotation_or_sentence"
     return None
+
+
+def is_label_only_heading(text: str) -> bool:
+    """True for a heading block carrying only a label ("Chapter I", "Part 3")."""
+    match = LABEL_NUMBER.match(canonical_heading_text(text))
+    return bool(match) and not match.group(3).strip()
+
+
+def is_title_like_continuation(text: str) -> bool:
+    """True for a short, line-broken block that continues a title.
+
+    Used to join a label-only heading ("#### Chapter I") with the title block
+    OCR split onto following lines ("Introduction:\\n\\nHow did the Rich
+    Countries\\n\\nReally Become Rich?")."""
+    value = canonical_heading_text(text)
+    if not value or len(value) > 120 or len(value.split()) > 20:
+        return False
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not 1 <= len(lines) <= 4:
+        return False
+    return all(len(line) <= 90 for line in lines)
 
 
 def should_merge(left: Block, right: Block, toc_titles: Sequence[str] = ()) -> bool:

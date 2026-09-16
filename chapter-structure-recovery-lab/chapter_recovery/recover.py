@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 import re
 from pathlib import Path
@@ -7,7 +9,14 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .alignment import TocAlignment, align_toc_entries, normalized_title, title_similarity
 from .models import Block, Node, TocEntry, stable_id
-from .heading_text import canonical_heading_text, merge_heading_blocks, numbering, rejection_reason
+from .heading_text import (
+    canonical_heading_text,
+    is_label_only_heading,
+    is_title_like_continuation,
+    merge_heading_blocks,
+    numbering,
+    rejection_reason,
+)
 from .page_map import PageMap
 from .style_model import infer_internal_styles
 from .toc import title_without_number
@@ -1146,7 +1155,8 @@ def recover_structure(
 
     raw_internal_blocks = []
     for page_index in range(max(0, body_start), min(len(pages), body_end + 1)):
-        for block in pages[page_index]:
+        page_blocks = pages[page_index]
+        for position, block in enumerate(page_blocks):
             parsed = numbering(block.clean_content)
             explicit_section_text = (
                 block.label == "text"
@@ -1163,6 +1173,33 @@ def recover_structure(
                 or explicit_apparatus_boundary
             ) and block.id not in used_blocks:
                 raw_internal_blocks.append(block)
+
+    # OCR sometimes splits a numbered chapter title into a label-only heading
+    # block plus the title on the following lines of a plain text block
+    # ("#### Chapter I" + "Introduction:\n\nHow did the Rich Countries\n\nReally
+    # Become Rich?").  Fold the continuation into the label heading here, so the
+    # pair becomes ONE heading candidate and the continuation block cannot also
+    # be promoted to a separate heading.  Live regression: kicking-away-the-ladder
+    # chapter 1 stayed a TOC entry without a block, leaving
+    # macro_toc_alignment_incomplete.
+    for index, block in enumerate(raw_internal_blocks):
+        if index + 1 >= len(raw_internal_blocks):
+            break
+        following = raw_internal_blocks[index + 1]
+        if (
+            following.label == "text"
+            and block.label == "paragraph_title"
+            and block.page_index == following.page_index
+            and following.block_index == block.block_index + 1
+            and is_label_only_heading(block.clean_content)
+            and is_title_like_continuation(following.content)
+        ):
+            raw_internal_blocks[index] = replace(
+                block,
+                content=(f"{canonical_heading_text(block.content)} "
+                         f"{canonical_heading_text(following.content)}"),
+            )
+            used_blocks.add(following.id)
 
     merged = merge_heading_blocks(raw_internal_blocks, [entry.title for entry in toc_entries])
     internal_blocks = [block for block, _ in merged]

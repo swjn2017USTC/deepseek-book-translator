@@ -140,6 +140,16 @@ def initialize_project(
             "bind_translation_cache": True,
         },
         "chunk": {"max_chars": 6000, "max_segments": 10, "max_glossary_terms": 40},
+        "translation": {
+            "context_mode": "contextual_v2",
+            "previous_segments": 1,
+            "next_segments": 1,
+            "previous_translation_max_chars": 300,
+            "skip_failed_segments": True,
+            # Public defaults stay serial because DeepSeek account limits vary.
+            # Users may raise this after a successful smoke ladder.
+            "max_workers": 1,
+        },
         "provider": {
             "api_url": "https://api.deepseek.com/chat/completions",
             "api_key_env": "DEEPSEEK_API_KEY",
@@ -151,6 +161,10 @@ def initialize_project(
             "retries": 8,
             "max_tokens": 8192,
             "temperature": 0.2,
+        },
+        "publish": {
+            "epubcheck": {"enabled": True, "require": True, "path": ""},
+            "pdf": {"tocdepth": 3},
         },
     })
     manifest = {
@@ -437,7 +451,12 @@ def translate_project(project_path: Path, target_completed: Optional[int], all_s
         raise ValueError("Choose an explicit --target-completed value or --all")
     project = _project_manifest(project_path)
     config = _translation_config(project)
-    return translate_book(config, target_completed=None if all_segments else target_completed)
+    target = None if all_segments else target_completed
+    if (config.get("translation") or {}).get("context_mode") == "contextual_v2":
+        from .contextual import translate_v2
+
+        return translate_v2(config, target_completed=target)
+    return translate_book(config, target_completed=target)
 
 
 def render_project(project_path: Path, allow_partial: bool = False) -> Dict[str, Any]:

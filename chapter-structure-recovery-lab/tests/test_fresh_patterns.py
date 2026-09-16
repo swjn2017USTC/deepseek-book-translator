@@ -85,6 +85,48 @@ def test_splits_part_and_chapter_glued_in_toc_and_keeps_year_range():
     assert "1934–41" in entries[0].title
 
 
+def test_part_title_word_is_not_read_as_glued_roman_chapter():
+    """A letters-only run at the start of a word ("CIVIL") must not be read as a
+    glued Roman chapter number; the line stays ONE part entry.
+
+    Live regression (what-was-socialism): the TOC line
+    "PART II: IDENTITIES: GENDER, NATION, CIVIL SOCIETY 59" was split into a part
+    plus a bogus chapter "CIVIL SOCIETY", leaving one macro TOC entry
+    permanently unaligned (macro_toc_alignment_incomplete)."""
+    pages = [[
+        block(0, 1, "paragraph_title", "Contents"),
+        block(0, 2, "paragraph_title",
+              "PART II: IDENTITIES: GENDER, NATION, CIVIL SOCIETY 59"),
+    ]]
+    entries = parse_toc_entries(pages, [0])
+    assert [(item.kind, item.title, item.print_page) for item in entries] == [
+        ("part", "PART II: IDENTITIES: GENDER, NATION, CIVIL SOCIETY", 59)
+    ]
+
+
+def test_label_numbered_heading_survives_question_mark_title():
+    """A heading that opens with a structural label stays a heading even when its
+    title ends in a question mark ("Chapter I: How did the Rich Countries Really
+    Become Rich?"), while a bare quoted question is still rejected.
+
+    Live regression (kicking-away-the-ladder): the split chapter title was
+    rejected as a quotation, so chapter 1 stayed a TOC entry without a block and
+    macro_toc_alignment_incomplete blocked the book."""
+    from chapter_recovery.heading_text import (
+        is_label_only_heading,
+        is_title_like_continuation,
+        rejection_reason,
+    )
+
+    assert rejection_reason("Chapter I Introduction: How did the Rich Countries Really Become Rich?") is None
+    assert rejection_reason("Kapitel III Kraft und Verstand") is None
+    assert rejection_reason("Why did the rich countries really become rich after all?") == "quotation_or_sentence"
+    assert is_label_only_heading("#### Chapter I") is True
+    assert is_label_only_heading("Chapter I Introduction") is False
+    assert is_title_like_continuation("Introduction:\n\nHow did the Rich Countries\n\nReally Become Rich?") is True
+    assert is_title_like_continuation("word " * 40) is False
+
+
 def test_does_not_treat_wrapped_year_suffix_as_page_number():
     pages = [[block(0, 1, "text", "2 Social identity in Soviet Russia, 1934– 41")]]
     entry = parse_toc_entries(pages, [0])[0]

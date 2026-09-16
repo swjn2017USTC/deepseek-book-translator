@@ -319,28 +319,80 @@ def _promote_headings_markdown(text: str, title: str, author: str) -> str:
     )
 
 
-def _escape_table_cell_list_markers(text: str) -> str:
-    """Escape Markdown list markers that start a raw-HTML table cell.
+_EMPHASIS_WRAPPED_HTML = re.compile(r"(?m)^\*(\s*(?:<[^>]+>\s*)+.*?)\*\s*$")
 
-    PaddleOCR tables are emitted as raw HTML, and Pandoc still parses Markdown
-    inside a raw HTML block.  A cell written as ``<td …>1. text</td>`` therefore
-    became a nested ``<ol><li>`` whose end tags the raw ``<td>`` never closes →
-    EPUBCheck FATAL RSC-016 with cascading RSC-012 (live regression:
-    the-dictators-dilemma ch005/ch007/ch010, 118 errors + 3 fatals).
+
+def _normalize_raw_html_blocks(text: str) -> str:
+    """Keep OCR raw-HTML blocks balanced and unwrapped for Pandoc's EPUB writer.
+
+    Source emphasis markers were normalized from ``>phrase<`` to ``*phrase*``
+    (see ``_apply_text_level_clean``).  When the "phrase" is a raw HTML wrapper
+    the result was ``*<div …><div …>(a) 约1215年</div> </div>*``; Pandoc then
+    opened a Div that it never closed, so everything after it in the chapter was
+    swallowed by an unclosed element (live regression: waging-war ch012, FATAL
+    RSC-016 "The element type \"li\" must be terminated …", 679 KB of markdown).
+
+    Three text-level repairs, all EPUB-only:
+    * drop a ``*…*`` wrapper whose content is raw HTML;
+    * unwrap purely presentational ``<div>`` wrappers around text (OCR caption
+      bubbles); Pandoc's markdown-in-HTML parsing leaves these unbalanced when a
+      run of raw lines has no blank line between the members;
+    * close ``<div>``/``<span>`` tags left dangling on a single line.
+    """
+    unwrapped = _EMPHASIS_WRAPPED_HTML.sub(lambda match: match.group(1), text)
+    repaired: List[str] = []
+    for line in unwrapped.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("<") or stripped.startswith("*<"):
+            body = stripped.lstrip("*").rstrip("*")
+            if "<div" in body and "<img" not in body and "<table" not in body:
+                without_divs = re.sub(r"</?div\b[^>]*>", " ", body)
+                if "<" not in without_divs:
+                    line = " ".join(without_divs.split())
+                    repaired.append(line)
+                    continue
+            for tag in ("div", "span"):
+                opens = len(re.findall(rf"<{tag}\b", body))
+                closes = len(re.findall(rf"</{tag}>", body))
+                if opens > closes:
+                    line = line.rstrip() + f"</{tag}>" * (opens - closes)
+        repaired.append(line)
+    return "\n".join(repaired)
+
+
+def _escape_raw_html_list_markers(text: str) -> str:
+    """Escape Markdown list markers that follow a raw-HTML tag.
+
+    PaddleOCR content is emitted as raw HTML (tables, centered figure captions),
+    and Pandoc still parses Markdown inside a raw HTML block.  Text written as
+    ``<td …>1. text</td>`` or ``<div …>4. caption</div>`` therefore became a
+    nested ``<ol><li>`` whose end tags the raw HTML never closes → EPUBCheck
+    FATAL RSC-016 with cascading RSC-012 (live regressions:
+    the-dictators-dilemma ch005/ch007/ch010; seeing-like-a-state ch005).
+
+    Only lines that start with raw HTML are touched, and only the marker right
+    after a ``>`` is escaped, so ordinary Markdown lists are unaffected.
 
     EPUB-only on purpose: the TeX path passes raw HTML through to LaTeX, where
     a Markdown backslash escape would surface as an undefined control sequence
     (observed as ``\\2.`` → "Undefined control sequence" plus CJK rendered in
     the Latin font).
     """
-    return re.sub(
-        r"(<t[dh]\b[^>]*>)(\s*)(\d{1,3}|[-*+])([.)]?)(\s+)",
-        lambda match: (
+    marker = re.compile(r"(>)(\s*)(\d{1,3}|[-*+])([.)]?)(\s+)")
+
+    def escape(match: "re.Match[str]") -> str:
+        return (
             f"{match.group(1)}{match.group(2)}\\{match.group(3)}"
             f"{match.group(4)}{match.group(5)}"
-        ),
-        text,
-    )
+        )
+
+    escaped_lines = []
+    for line in text.split("\n"):
+        head = line.lstrip().lstrip("*").lstrip()
+        if head.startswith("<") and ">" in line:
+            line = marker.sub(escape, line)
+        escaped_lines.append(line)
+    return "\n".join(escaped_lines)
 
 
 def _apply_text_level_clean(text: str) -> str:
@@ -367,6 +419,15 @@ def _apply_text_level_clean(text: str) -> str:
         text,
     )
     text = re.sub(r"\d{100,}", "", text)
+    # Math delimiters inside OCR raw-HTML table rows can pair across cells and
+    # make Pandoc swallow the table structure. Keep the cell text while
+    # removing only those delimiters on HTML table lines.
+    def _strip_table_math(line: str) -> str:
+        if "<td" not in line and "<table" not in line:
+            return line
+        return re.sub(r"\$\s*([^$\n]*?)\s*\$", r"\1", line)
+
+    text = "\n".join(_strip_table_math(line) for line in text.split("\n"))
     text = re.sub(
         r"\$\s*\^\{(\d+(?:[,-]\d+)*)\}\s*\$",
         lambda match: f"$^{{{match.group(1)}}}$",
@@ -601,14 +662,18 @@ def _verify_epub(path: Path) -> Dict[str, Any]:
 def _epubcheck_discover(settings: Dict[str, Any]) -> Optional[str]:
     """Locate an epubcheck executable or jar, or return None (decision 3).
 
-    Discovery order: explicit publish.epubcheck.path -> PATH executable ->
-    common Homebrew jar locations. Absence is reported honestly as
-    validation_incomplete downstream, never as a fabricated pass.
+    Discovery order: explicit publish.epubcheck.path -> ``EPUBCHECK_JAR``
+    environment variable -> PATH executable -> common Homebrew jar locations.
+    Absence is reported honestly as validation_incomplete downstream, never as
+    a fabricated pass (and ``require=true`` fails closed instead).
     """
     epubcheck = settings["epubcheck"]
     explicit = str(epubcheck.get("path") or "").strip()
     if explicit:
         return explicit
+    env_jar = os.environ.get("EPUBCHECK_JAR", "").strip()
+    if env_jar and Path(env_jar).expanduser().is_file():
+        return env_jar
     executable = shutil.which("epubcheck")
     if executable:
         return executable
@@ -744,8 +809,10 @@ def export_book(
             # original dir for any referenced assets.
             epub_markdown = temp_dir / "book_for_epub.md"
             epub_markdown.write_text(
-                _escape_table_cell_list_markers(
-                    _apply_text_level_clean(markdown.read_text(encoding="utf-8"))
+                _normalize_raw_html_blocks(
+                    _escape_raw_html_list_markers(
+                        _apply_text_level_clean(markdown.read_text(encoding="utf-8"))
+                    )
                 ),
                 encoding="utf-8",
             )

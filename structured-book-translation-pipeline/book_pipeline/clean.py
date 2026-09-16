@@ -187,7 +187,10 @@ def clean_book(config: Dict[str, Any]) -> Dict[str, Any]:
             segments.append(_segment(config["book_id"], kind, text, page_index, current_zone, current_parent, [identifier], translatable=current_zone in translate_zones, metadata={"label": label, "bbox": item["bbox"], "last_page": page_index}))
         for number, body, identifiers in raw_footnotes.get(page_index, []):
             reference = f"fn-p{page_index:04d}-{number}"
-            segments.append(_segment(config["book_id"], "footnote", body, page_index, current_zone, current_parent, identifiers, translatable=current_zone in translate_zones, metadata={"reference": reference, "number": number}, stable_hint=reference))
+            # Empty OCR footnote blocks have nothing to translate. Counting one
+            # as required makes 100% coverage impossible because no translation
+            # row can contain a non-empty target for it.
+            segments.append(_segment(config["book_id"], "footnote", body, page_index, current_zone, current_parent, identifiers, translatable=bool(body.strip()) and current_zone in translate_zones, metadata={"reference": reference, "number": number}, stable_hint=reference))
 
     segments = _stitch_cross_page(segments, config["book_id"])
     report = {

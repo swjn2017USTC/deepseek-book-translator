@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepSeek Book Translation"
+  short_description: "Translate PaddleOCR books with auditable gates"
+  default_prompt: "Use $deepseek-book-translation to translate my PaddleOCR JSON into a reviewed Chinese book."

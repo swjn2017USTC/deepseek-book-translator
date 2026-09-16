@@ -6,6 +6,7 @@
 
 - **CLI**：适合希望逐步控制结构审核、术语和翻译批次的用户；
 - **Coding Agent**：把预制提示词交给 Codex、Claude Code 等能够读写文件和运行命令的 agent；
+- **Agent Skill**：安装仓库内的标准 Skill，让支持 Skill 的 agent 自动发现完整工作流；
 - **Windows EXE**：通过图形界面选择 OCR JSON、填写书名和参数并运行主要步骤。
 
 仓库只包含程序、schema 和合成测试样例，没有真实书籍 OCR、译文、封面、运行记录、API key 或私人配置。书籍项目、译文和导出物默认在 Git 忽略范围内。
@@ -75,7 +76,7 @@ python3 translate_book.py qa --config books/my-book/translation_config.json
 
 封面主题可选 `auto`、`ink`、`ocean`、`ember`、`forest`、`plum`。如果用户提供了有权使用的图片，也可以用 `new_book.py set-cover --help` 登记并替换自动封面。
 
-PDF/EPUB 导出还需要 Pandoc、XeLaTeX、可用的中文字体和可选 epubcheck：
+PDF/EPUB 导出还需要 Pandoc、XeLaTeX、可用的中文字体和 EPUBCheck。新项目默认要求 EPUBCheck 通过才交付 EPUB；可用 `EPUBCHECK_JAR` 指向 jar：
 
 ```bash
 python3 new_book.py export --project books/my-book --format both
@@ -88,6 +89,8 @@ python3 new_book.py export --project books/my-book --format both
 Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、章节恢复、结构审核、术语审核、本地封面生成、零网络预检、分级翻译、QA、Markdown 渲染与可选 PDF/EPUB 导出。证据不足的结构或术语必须留给用户，不允许为了跑通而猜测。
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
+
+支持标准 Skill 的 agent 可安装 [`skills/deepseek-book-translation`](skills/deepseek-book-translation/SKILL.md)，安装方法和本地私有版的配置边界见 [Agent Skill 方案](docs/AGENT_SKILLS.md)。新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。
 
 ## 方式三：Windows EXE
 
@@ -114,7 +117,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\windows\build_windows.ps1
 ```
 
-生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目、三页合成样例和 Pillow；PDF/EPUB 所需的 Pandoc、XeLaTeX 与字体仍需另行安装。Windows PDF 默认使用 SimSun、Microsoft YaHei 和 Consolas 字体。
+生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目、三页合成样例和 Pillow；PDF/EPUB 所需的 Pandoc、XeLaTeX、字体和 EPUBCheck 仍需另行安装。Windows PDF 默认使用 SimSun、Microsoft YaHei 和 Consolas 字体。
 
 也可以在有桌面环境的 Python 安装中直接启动 GUI：
 
@@ -162,6 +165,6 @@ git push origin main
 创建新的版本标签会触发 Windows EXE 构建并创建或更新对应 Release，例如：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```

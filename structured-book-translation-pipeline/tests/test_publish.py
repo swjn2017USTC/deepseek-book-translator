@@ -24,7 +24,7 @@ from book_pipeline.io_utils import read_jsonl, write_jsonl
 from book_pipeline.publish import (
     _apply_text_level_clean,
     _epubcheck_discover,
-    _escape_table_cell_list_markers,
+    _escape_raw_html_list_markers,
     _filters_dir,
     _pandoc_args_for_tex,
     _publish_settings,
@@ -237,22 +237,52 @@ GOLDEN_EXPECTED = (
 )
 
 
-def test_escape_table_cell_list_markers_for_epub():
-    """PaddleOCR tables are raw HTML; a cell starting with a Markdown list
-    marker makes Pandoc emit an unclosed <ol><li> inside the raw <td>
-    (EPUBCheck FATAL RSC-016 + cascading RSC-012).  Live regression:
-    the-dictators-dilemma ch005/ch007/ch010."""
+def test_escape_raw_html_list_markers_for_epub():
+    """List markers inside OCR HTML must not become unclosed EPUB lists."""
     markdown = (
         "<table><tr>"
         "<td style='text-align: center;'>1. 即使我可以在世界上任意选择国家。</td>"
         "<td style='text-align: center;'>26.4</td>"
         "<td>- 项目二</td>"
         "</tr></table>\n"
+        "*<div style=\"text-align: center;\"><div>4. 图注</div></div>*\n"
+        "1. 普通 Markdown 列表不受影响\n"
     )
-    cleaned = _escape_table_cell_list_markers(markdown)
+    cleaned = _escape_raw_html_list_markers(markdown)
     assert "\\1. 即使我可以在世界上任意选择国家。" in cleaned
     assert "\\- 项目二" in cleaned
     assert ">26.4<" in cleaned  # numeric data cells stay untouched
+    assert "\\4. 图注" in cleaned
+    assert "\n1. 普通 Markdown 列表不受影响" in cleaned
+
+
+def test_normalize_raw_html_blocks_unwraps_captions_and_emphasis():
+    from book_pipeline.publish import _normalize_raw_html_blocks
+
+    text = "\n".join([
+        '*<div style="text-align: center;"><div>(a) 约1215年</div> </div>*',
+        '<div style="text-align: center;"><div>图6.5 图注开始',
+        '<div style="text-align: center;"><img src="x.jpg" /></div>',
+    ])
+    out = _normalize_raw_html_blocks(text)
+    lines = out.split("\n")
+    assert lines[0] == "(a) 约1215年"
+    assert lines[1] == "图6.5 图注开始"
+    assert "*" not in out and "<div" in out
+    for line in lines:
+        if line.lstrip().startswith("<"):
+            assert line.count("<div") == line.count("</div>")
+
+
+def test_apply_text_level_clean_strips_math_inside_raw_html_tables():
+    table = (
+        "<table><tr><td>$ 1840s^{b} $</td><td>1912 (the Netherlands) $ ^{b} $</td></tr></table>\n"
+        "正文里的 $ ^{7} $ 脚注标记必须保留。\n"
+    )
+    cleaned = _apply_text_level_clean(table)
+    assert "$" not in cleaned.split("\n")[0]
+    assert "1840s^{b}" in cleaned and "1912 (the Netherlands)" in cleaned
+    assert "$^{7}$" in cleaned
 
 
 def test_clean_for_latex_still_byte_identical():

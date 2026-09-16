@@ -122,6 +122,23 @@ def test_clean_translate_resume_and_render(tmp_path):
     assert "[^fn-p0001-1]: 译：The source footnote." in text
 
 
+def test_empty_footnote_body_is_not_required_for_coverage(tmp_path):
+    config = make_config(tmp_path)
+    pages = json.loads((FIXTURES / "sample_ocr.json").read_text(encoding="utf-8"))
+    pages[1]["prunedResult"]["parsing_res_list"][3]["block_content"] = "1."
+    input_path = tmp_path / "empty-footnote.json"
+    input_path.write_text(json.dumps(pages), encoding="utf-8")
+    config["input_json"] = str(input_path)
+    clean_book(config)
+    footnotes = [
+        row for row in read_jsonl(Path(config["output_dir"]) / "cleaned_segments.jsonl")
+        if row["kind"] == "footnote"
+    ]
+    assert len(footnotes) == 1
+    assert footnotes[0]["source_text"] == ""
+    assert footnotes[0]["translatable"] is False
+
+
 def test_cover_registration_is_provenance_bound_and_export_refuses_incomplete_book(tmp_path):
     project = tmp_path / "book-project"
     image = tmp_path / "cover.png"
@@ -224,6 +241,16 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert translation_config["provider"]["auth_header"] == "Authorization"
     assert translation_config["provider"]["auth_scheme"] == "Bearer"
     assert not any(key in translation_config["provider"] for key in ("api_key", "token", "secret"))
+    translation = translation_config["translation"]
+    assert translation["context_mode"] == "contextual_v2"
+    assert (translation["previous_segments"], translation["next_segments"]) == (1, 1)
+    assert translation["previous_translation_max_chars"] == 300
+    assert translation["skip_failed_segments"] is True
+    assert translation["max_workers"] == 1
+    assert translation_config["publish"]["epubcheck"] == {
+        "enabled": True, "require": True, "path": ""
+    }
+    assert translation_config["publish"]["pdf"]["tocdepth"] == 3
     assert Path(initialized["glossary"]).read_text(encoding="utf-8").strip() == "[]"
     assert (project_dir / "RUNBOOK.md").is_file()
     assert (project_dir / "glossary_decision.schema.json").is_file()
@@ -248,6 +275,19 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert prepared["translation"]["completed_segments"] == 0
     assert status["status"] == "ready_to_translate"
     assert status["cleaning_fresh"] is True
+    import book_pipeline.contextual as contextual
+
+    called = {}
+
+    def fake_translate_v2(config, *, target_completed=None, **_kwargs):
+        called.update(mode=config["translation"]["context_mode"], target=target_completed)
+        return {"status": "contextual-dispatched"}
+
+    monkeypatch.setattr(contextual, "translate_v2", fake_translate_v2)
+    assert translate_project(project_dir, target_completed=10, all_segments=False) == {
+        "status": "contextual-dispatched"
+    }
+    assert called == {"mode": "contextual_v2", "target": 10}
     manifest = json.loads(
         (Path(initialized["work_dir"]) / "pipeline_manifest.json").read_text(encoding="utf-8")
     )

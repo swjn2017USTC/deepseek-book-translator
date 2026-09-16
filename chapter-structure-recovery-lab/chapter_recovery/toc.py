@@ -30,7 +30,16 @@ PART_ONLY = re.compile(
 )
 GLUED_PART_CHAPTER = re.compile(
     r"^((?:part|book|volume|teil)\s+(?:[ivxlcdm]+|\d+)\b.*?)\s+"
-    r"((?:chapter\s+)?(?:\d+|[ivxlcdm]+)\s*(?:\\?[.·])?\s+.+)$",
+    r"((?:chapter\s+)?(?:\d+|"
+    # A real glued chapter number is a canonical Roman numeral standing alone
+    # ("II The Republic"); a bare [ivxlcdm]+ also matched the first letters of
+    # an ordinary word.  Live regression: the TOC line
+    # "PART II: IDENTITIES: GENDER, NATION, CIVIL SOCIETY 59" was split into a
+    # part plus a bogus chapter "CIVIL SOCIETY" (the "CIVIL" prefix matched as a
+    # numeral), which left one macro TOC entry permanently unaligned
+    # (what-was-socialism: macro_toc_alignment_incomplete).
+    r"(?=[IVXLCDM])M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+    r"(?![A-Za-z]))\s*(?:\\?[.·])?\s+.+)$",
     re.I,
 )
 OCR_MIXED_PAGE = re.compile(
