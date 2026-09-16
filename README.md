@@ -13,6 +13,10 @@
 
 第一次使用可先看 [三页合成 OCR 入门样例](examples/README.md)。本项目代码采用 [MIT 许可证](LICENSE)；书籍原文、译文和用户提供的封面不因本仓库许可证而自动获得使用授权。贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
 
+## Contributors
+
+- [@swjn2017USTC](https://github.com/swjn2017USTC) — 项目发起人和主要维护者
+
 ## 能力
 
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
