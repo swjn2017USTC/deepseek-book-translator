@@ -2,7 +2,7 @@
 
 Run commands from `structured-book-translation-pipeline/`. Use absolute paths for user input and the project directory.
 
-## New book
+## New book (OCR/PDF or native EPUB)
 
 Inspect enough front matter and contents pages to infer the original title, a provisional Chinese title, author/editor when supported, source language, domain, `book_id`, and a reasonable `toc_search_end`. Keep the author empty when evidence is absent.
 
@@ -22,6 +22,21 @@ python3 new_book.py status --project '<PROJECT_DIR>'
 ```
 
 Do not re-run `init` for a non-empty existing project. Read its status and resume.
+
+For a native EPUB, use the package-preserving adapter instead of OCR:
+
+```bash
+python3 new_book.py init --input-epub '<SOURCE_EPUB>' \
+  --book-id '<BOOK_ID>' --book-title '<ORIGINAL_TITLE>' \
+  --book-title-zh '<CHINESE_TITLE>' --source-lang '<SOURCE_LANGUAGE>' \
+  --target-lang '简体中文' --domain '<DOMAIN>'
+python3 new_book.py prepare --project '<PROJECT_DIR>'
+python3 new_book.py status --project '<PROJECT_DIR>'
+```
+
+Inspect the compatibility disposition first. `BLOCKED` inputs cannot use this
+adapter; `PRESERVE_WITH_REVIEW` requires its review evidence. Do not route a
+native EPUB through the OCR/Pandoc path to clear a gate.
 
 ## Structure gate
 
@@ -76,6 +91,12 @@ python3 new_book.py export --project '<PROJECT_DIR>' --format both
 ```
 
 Review `likely_error` findings against the source; a flag is not proof of an error. Use the QA retranslation path only for verified failures. New projects require EPUBCheck for a deliverable EPUB; discovery checks the configured path, `EPUBCHECK_JAR`, `epubcheck` on PATH, and common package-manager locations. PDF also requires Pandoc, XeLaTeX, and Chinese fonts. If dependencies are missing, deliver Markdown and report the missing formats accurately.
+
+For native EPUB publication, require complete current coverage plus unchanged
+package/resource/link/table/footnote structure. Protected `[[EPUB:...]]`
+tokens must remain in the same order and nesting; failed responses are retried
+with the structural error while preserving checkpoints. A provider timeout is
+resumable incomplete state, not a release pass.
 
 ## Existing local provider profile
 
