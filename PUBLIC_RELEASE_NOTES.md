@@ -13,4 +13,5 @@
 - Synchronized bibliography/reference title handling so book and article titles are translated while authors, journals, publishers, URLs, and DOIs remain verifiable in the original form.
 - Added bounded QA triage and review-packet export helpers so large automated QA runs produce a small, explicit human queue instead of requiring manual inspection of every signal.
 - EPUB publication metadata now declares `zh-CN` for readers and validators.
+- QA URL extraction now stops at attached full-width punctuation or CJK prose, preventing false high-severity URL mismatches in Chinese translations.
 - Did not add a license. The project owner must choose one only after confirming rights to all retained source code.

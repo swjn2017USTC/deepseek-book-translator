@@ -45,6 +45,13 @@ FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
 # before comparison, matching translate.parse_translation's normalize step.
 URL = re.compile(r"https?://\S+")
 
+
+def normalize_url_token(token: str) -> str:
+    """Remove sentence punctuation and CJK prose accidentally attached to a URL."""
+    token = token.rstrip(".,;:!?。；！？、，、")
+    match = re.search(r"[　-鿿가-퟿豈-﫿＀-￯]", token)
+    return token[: match.start()] if match else token
+
 # Parenthetical citation containing a 19xx/20xx year, e.g. "(Vogel 2011)".
 # FP intent: any parenthetical date phrase ("(the 1980s reforms)") matches;
 # the check counts occurrences, it does not judge citation validity.
@@ -215,7 +222,7 @@ def check_segment(segment: Segment, translated_text: str) -> List[Dict[str, Any]
 
     # --- URL set parity: every distinct source URL must appear verbatim ---
     def _urls(text: str) -> List[str]:
-        return [token.rstrip(".,;:!?。；！？") for token in URL.findall(text)]
+        return [normalize_url_token(token) for token in URL.findall(text)]
 
     source_urls = _urls(source)
     target_urls = _urls(translated_text)

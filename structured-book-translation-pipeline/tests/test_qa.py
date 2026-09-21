@@ -658,6 +658,17 @@ def test_qa1_url_set_parity_catches_replacement(tmp_path):
     assert any(flag["check"] == "urls" for flag in flags)
 
 
+def test_qa1_url_set_parity_ignores_attached_cjk_prose(tmp_path):
+    segment = Segment(id="u2", source_hash=digest("a"), kind="footnote",
+                      source_text="See http://example.org/a. Then continue.",
+                      page_json=1, zone="backmatter", parent_node_id=None)
+    translated = "参见 http://example.org/a。另见后文。"
+    assert not any(
+        flag["check"] == "urls"
+        for flag in deterministic_module.check_segment(segment, translated)
+    )
+
+
 def test_qa1_classes_no_zero_length_and_overlap_documented(tmp_path):
     import book_pipeline.qa.deterministic as det
 

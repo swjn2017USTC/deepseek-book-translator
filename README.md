@@ -211,6 +211,6 @@ git push origin main
 创建新的版本标签会触发 Windows EXE 构建并创建或更新对应 Release，例如：
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
