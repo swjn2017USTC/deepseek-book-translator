@@ -250,6 +250,11 @@ def _translate_one(
     dependencies = resolve_concept_deps(segment, prepared["concepts"])
     glossary = glossary_subset(segment, prepared["concepts"], dependencies)
     prompt = system_prompt(config)
+    if segment.kind in {"footnote", "caption"} or str((segment.metadata or {}).get("label") or "") == "reference_content":
+        prompt += (
+            "\n强制复核本条书目：凡是引号、斜体或标题位置出现的英文书名/文章名必须给出中文译名，"
+            "不得整条照抄英文。作者、期刊、出版社、URL、DOI 可保留原文以便核对；但标题必须出现中文。"
+        )
     payload = build_payload(
         chapter_brief=prepared["brief_payloads"][chapter_id],
         previous_source=previous_sources,

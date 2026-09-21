@@ -29,7 +29,11 @@ STOPWORDS = {
 GENERIC_HEADINGS = {
     "contents", "introduction", "conclusion", "notes", "bibliography", "references",
     "acknowledgements", "acknowledgments", "index", "preface", "foreword",
+    "further reading", "conclusions",
 }
+NON_TERM_FRAGMENT = re.compile(
+    r"^(?:\d{2,4}(?:\s+(?:bce|ce))?|\d{2,4}\s+years?\s+ago)$", re.I
+)
 
 
 def file_sha256(path: Path) -> str:
@@ -162,7 +166,7 @@ def _candidate_sources(config: Dict[str, Any], segments: Sequence[Dict[str, Any]
         cleaned = re.sub(r"\s+", " ", term).strip(" \t\n\r.,;:!?()[]{}")
         norm = _normal(cleaned)
         words = WORD.findall(cleaned)
-        if len(norm) < 4 or len(words) > 8 or norm in GENERIC_HEADINGS:
+        if len(norm) < 4 or len(words) > 8 or norm in GENERIC_HEADINGS or NON_TERM_FRAGMENT.fullmatch(cleaned):
             return
         item = terms.setdefault(norm, {"term": cleaned, "reasons": set(), "segment_ids": [], "contexts": [], "score": 0})
         if len(cleaned) < len(item["term"]):
@@ -238,7 +242,9 @@ def _candidates(config: Dict[str, Any], segments: Sequence[Dict[str, Any]], cove
         if norm in covered:
             continue
         item["reasons"] = sorted(item["reasons"])
-        item["occurrences"] = len(item.pop("segment_ids"))
+        segment_ids = list(item.pop("segment_ids"))
+        item["occurrences"] = len(segment_ids)
+        item["evidence_segment_ids"] = segment_ids[:12]
         item["sample_contexts"] = item.pop("contexts")
         item["normalized_term"] = norm
         item["candidate_id"] = "glo-" + sha256(norm.encode("utf-8")).hexdigest()[:12]

@@ -34,9 +34,10 @@ def system_prompt(config: Dict[str, Any]) -> str:
         f"2. {CONTEXT_ONLY_CLAUSE}\n"
         "3. 不增删、概括或解释；保留论证、限定、引文、数字和专名。只翻译 target 的 text 字段。\n"
         "4. 严格使用提供的 glossary 条目；专名首次出现可用“译名（原文）”，同一段再次出现只用译名。\n"
-        "5. 保留全部脚注引用、HTML 注释、公式、URL 和表格分隔符；所有结构令牌（脚注、HTML 注释、URL、公式）必须逐字节原样复制，不得改写、包裹为 Markdown 链接或添加标点。\n"
-        "6. 不添加 Markdown 标题井号、页码、前言或说明。\n"
-        '7. 只返回严格 JSON 对象：{"id": "<target 的 id>", "translated_text": "<target 的译文>"}；id 必须与输入的 target.id 完全一致，响应中不得出现任何其他片段 id。'
+        "5. 参考文献、书目和脚注中的书名与文章标题也必须翻译为目标语言；不可因其属于书目而整句原样复制。作者名、期刊名、出版社名、URL、DOI 和书目信息保留可核对的原文形式。\n"
+        "6. 保留全部脚注引用、HTML 注释、公式、URL 和表格分隔符；所有结构令牌（脚注、HTML 注释、URL、公式）必须逐字节原样复制，不得改写、包裹为 Markdown 链接或添加标点。\n"
+        "7. 不添加 Markdown 标题井号、页码、前言或说明。\n"
+        '8. 只返回严格 JSON 对象：{"id": "<target 的 id>", "translated_text": "<target 的译文>"}；id 必须与输入的 target.id 完全一致，响应中不得出现任何其他片段 id。'
     )
 
 

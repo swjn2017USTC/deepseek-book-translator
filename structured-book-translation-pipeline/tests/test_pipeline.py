@@ -333,6 +333,8 @@ def test_glossary_generation_uses_boundaries_and_invalidates_translation_cache(t
     assert "Publisher" not in terms
 
     candidates = list(read_jsonl(tmp_path / "glossary_candidates.jsonl"))
+    assert all(row["evidence_segment_ids"] for row in candidates)
+    assert all(row["occurrences"] >= len(row["evidence_segment_ids"]) for row in candidates)
     decisions = tmp_path / "glossary_decisions.jsonl"
     write_jsonl(decisions, [
         {"candidate_id": row["candidate_id"], "decision": "reject", "reason": "fixture non-term"}

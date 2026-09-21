@@ -9,4 +9,8 @@
 - Removed original `books/`, `runs/`, `work/`, `smoke/`, `audits/`, `corpus/`, `gold/`, reports, OMP instructions, and machine-specific configs.
 - Replaced machine-specific source-library and glossary defaults. Each initialized book gets an empty local `glossary_master.json`; `BOOK_SOURCE_LIBRARY_ROOT` is optional.
 - Kept source packages, schemas, CLI entry points, synthetic fixtures, and offline unit tests.
+- Synchronized the evidence-gated glossary candidate output, including source segment evidence and occurrence counts, plus deterministic rejection of generic heading fragments.
+- Synchronized bibliography/reference title handling so book and article titles are translated while authors, journals, publishers, URLs, and DOIs remain verifiable in the original form.
+- Added bounded QA triage and review-packet export helpers so large automated QA runs produce a small, explicit human queue instead of requiring manual inspection of every signal.
+- EPUB publication metadata now declares `zh-CN` for readers and validators.
 - Did not add a license. The project owner must choose one only after confirming rights to all retained source code.

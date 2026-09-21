@@ -793,7 +793,8 @@ def export_book(
     common = [
         pandoc, str(markdown), "--standalone", "--toc",
         f"--toc-depth={settings['toc_depth']}",
-        "--metadata", f"title={title}", "--resource-path", f"{markdown.parent}:{project_dir}",
+        "--metadata", f"title={title}", "--metadata", "lang=zh-CN",
+        "--resource-path", f"{markdown.parent}:{project_dir}",
     ]
     if author:
         common += ["--metadata", f"author={author}"]
