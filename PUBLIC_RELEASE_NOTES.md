@@ -15,3 +15,7 @@
 - EPUB publication metadata now declares `zh-CN` for readers and validators.
 - QA URL extraction now stops at attached full-width punctuation or CJK prose, preventing false high-severity URL mismatches in Chinese translations.
 - Did not add a license. The project owner must choose one only after confirming rights to all retained source code.
+- Native EPUB structural support is now included: fail-closed XHTML token
+  preservation, resource/link/table/footnote invariants, safe repacking, and
+  EPUBCheck-aware validation. The public build keeps DeepSeek as its provider;
+  private USTC credentials and book artifacts remain excluded.
