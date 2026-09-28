@@ -1,6 +1,6 @@
 # Structured Book Translation Pipeline
 
-处理 PaddleOCR JSON 或 native reflowable EPUB，通过 DeepSeek 官方 API 断点翻译，并渲染/回写结构化书籍。OCR 输入使用相邻的 `chapter-structure-recovery-lab/` 恢复章节树；EPUB 使用 package/DOM-preserving 适配器。
+处理 PaddleOCR JSON 或 native reflowable EPUB，通过 DeepSeek 官方 API 断点翻译，并渲染/回写结构化书籍。OCR 输入使用相邻的 `chapter-structure-recovery-lab/` 做确定性章节恢复，并可在人工审核前通过 DeepSeek Vision + PyMuPDF 增加 TOC/正文标题视觉证据；EPUB 使用 package/DOM-preserving 适配器。
 
 主要入口：
 
@@ -10,7 +10,7 @@ python3 new_book.py generate-cover --project books/my-book --theme auto
 python3 ../deepseek_book_translator_gui.py
 ```
 
-默认使用 `DEEPSEEK_API_KEY`、`https://api.deepseek.com/chat/completions`、`deepseek-flash` 和 Bearer 鉴权。密钥不会写入项目。章节结构审核保持人工门禁；结构通过后默认运行 `python3 new_book.py auto-glossary --project <PROJECT>`，让 DeepSeek 自动完成术语 include/reject 与统一译名，并写出可审计记录。完整 CLI、Coding Agent 和 Windows EXE 文档见仓库根目录 README。
+默认使用 `DEEPSEEK_API_KEY`、`https://api.deepseek.com/chat/completions`、`deepseek-flash` 和 Bearer 鉴权。OCR/PDF 项目可运行 `python3 new_book.py vision-structure --project <PROJECT>`；Vision 模型可用 `DEEPSEEK_VISION_MODEL` 单独覆盖。密钥不会写入项目。章节结构审核保持人工门禁；结构通过后默认运行 `python3 new_book.py auto-glossary --project <PROJECT>`，让 DeepSeek 自动完成术语 include/reject 与统一译名，并写出可审计记录。完整 CLI、Coding Agent 和 Windows EXE 文档见仓库根目录 README。
 # Native EPUB structural layer
 
 The public pipeline now includes the same fail-closed native EPUB structural
