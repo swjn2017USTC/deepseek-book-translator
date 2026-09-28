@@ -11,6 +11,7 @@ from .config import resolve_path
 from .io_utils import append_jsonl, read_jsonl, write_json
 from .llm_client import ChatClient, OpenAICompatibleClient, _ExactHeaderName  # noqa: F401 (re-exported below)
 from .models import Segment, TranslationRecord
+from .epub.translation import validate_epub_translation
 from .clean import require_structure_gate
 from .glossary import glossary_cache_sha, require_ready_glossary
 from .provenance import require_fresh_cleaning
@@ -86,7 +87,7 @@ def system_prompt(config: Dict[str, Any]) -> str:
 1. 不增删、概括或解释；保留论证、限定、引文、数字和专名。
 2. 严格使用提供的术语表。专名首次出现可用“译名（原文）”，同一段再次出现只用译名。
 3. 输入是结构化片段，不要添加 Markdown 标题井号、页码、前言或说明。
-4. 保留全部脚注引用、HTML 注释、公式、URL 和表格分隔符；所有结构令牌（脚注、HTML 注释、URL、公式）必须逐字节原样复制，不得改写、包裹为 Markdown 链接或添加标点。
+4. 保留全部脚注引用、HTML 注释、公式、URL、表格分隔符以及 [[EPUB:...]] 令牌；所有结构令牌必须逐字节原样复制，不得改写、重排、包裹为 Markdown 链接或添加标点。
 5. 标题只翻译原文，不改层级，不自行补标题。
 6. 只返回严格 JSON；每个输入 id 恰好返回一次。"""
 
@@ -163,6 +164,7 @@ def parse_translation(content: str, batch: Sequence[Segment]) -> Dict[str, str]:
             raise ValueError(f"Structural token mismatch for {segment.id}")
         if segment.kind == "table" and translated[segment.id].count("|") != segment.source_text.count("|"):
             raise ValueError(f"Markdown table delimiter mismatch for {segment.id}")
+        validate_epub_translation(segment, translated[segment.id])
     return translated
 
 
