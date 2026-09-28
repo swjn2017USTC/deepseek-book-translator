@@ -79,7 +79,7 @@ python3 new_book.py vision-structure --project books/my-book
 python3 new_book.py status --project books/my-book
 ```
 
-`prepare` 保持纯离线：PaddleOCR label、页码映射、全局 TOC 对齐、编号和版式规则先给出 baseline。随后 `vision-structure` 才会联网并产生 API 费用。它优先读取与 OCR JSON 同名的 PDF，用 PyMuPDF 渲染页面；如果没有同名 PDF，则退回 OCR JSON 的 `inputImage`。也可以显式传入 `--pdf /path/to/source.pdf`。
+`prepare` 保持纯离线：PaddleOCR label、页码映射、全局 TOC 对齐、编号和版式规则先给出 baseline。随后 `vision-structure` 才会联网并产生 API 费用。它优先读取显式指定或与 OCR JSON 同名的 PDF，用 PyMuPDF 渲染页面；如果没有 PDF，则退回 OCR JSON 的本地路径/data-URL `inputImage`。远程 `http(s)` 图片默认不信任、不发送给模型，只有显式设置 `vision.allow_remote_input_images=true` 才启用。也可以在 CLI 传入 `--pdf /path/to/source.pdf`；Windows GUI 则有单独的“Vision PDF（可选）”选择框。
 
 Vision 会批量扫描前言区识别真正的 TOC 页并抄录目录项；正文阶段默认不会盲扫全书，而是结合 PaddleOCR 的 `paragraph_title/doc_title/table of contents` 类别、短标题几何、编号、PyMuPDF 大字号行和 TOC 目标页，先筛出候选页再看图。若追求最大召回，可在 `chapter_config.json` 设 `vision.scan_all_body_pages=true`。输出 `structure/vision_structure.json` 绑定 OCR SHA-256，并记录模型、扫描页、TOC、正文标题与 usage。
 
@@ -231,7 +231,7 @@ Skill 的文件结构、配置边界和本地私有版的区别见 [Agent Skill 
 
 Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 
-- OCR JSON / reflowable EPUB 文件选择；
+- OCR JSON / reflowable EPUB 文件选择，并为 OCR 项目提供可选的对应 PDF 选择框供 Vision 直接渲染；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
 - DeepSeek 模型、思考模式（默认 disabled）及隐藏显示的 API key 输入；
 - 初始化、**离线准备 + DeepSeek Vision 章节增强**、人工章节审核、DeepSeek 自动术语审核、可选人工术语复核、自动封面、零网络预检、分批翻译、状态、渲染和导出按钮；
