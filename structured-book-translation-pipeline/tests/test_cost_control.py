@@ -116,7 +116,7 @@ def test_unknown_model_pricing_fails_closed(tmp_path, monkeypatch):
     )
     assert report["pricing_supported"] is False
     assert report["estimated_cost_rmb_so_far"] is None
-    assert "unknown_model_pricing" in report["warnings"]
+    assert "unknown_or_mixed_model_pricing" in report["warnings"]
 
 
 def test_failed_usage_cost_does_not_inflate_completed_denominator(tmp_path):
@@ -157,3 +157,43 @@ def test_failed_usage_cost_does_not_inflate_completed_denominator(tmp_path):
     assert report["usage"]["completed_segment_ids"] == 1
     assert report["usage"]["failed_segment_ids"] == 1
     assert report["average_cost_rmb_per_completed_segment"] == report["estimated_cost_rmb_so_far"]
+
+
+def test_mixed_historical_models_disable_builtin_flash_pricing(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    path = Path(tmp_path) / "usage.jsonl"
+    rows = [
+        {
+            "model": "deepseek-flash",
+            "segment_ids": ["s1"],
+            "status": "completed",
+            "usage": {
+                "prompt_tokens": 10,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 10,
+                "completion_tokens": 10,
+                "request_count": 1,
+            },
+        },
+        {
+            "model": "some-other-model",
+            "segment_ids": ["s2"],
+            "status": "completed",
+            "usage": {
+                "prompt_tokens": 10,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 10,
+                "completion_tokens": 10,
+                "request_count": 1,
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    report = cost_report(
+        {"provider": {"model": "deepseek-flash"}},
+        path,
+        remaining_segments=1,
+        completed_segments=2,
+    )
+    assert report["pricing_supported"] is False
+    assert "unknown_or_mixed_model_pricing" in report["warnings"]
