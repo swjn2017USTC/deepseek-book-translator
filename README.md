@@ -30,6 +30,18 @@
 - 根据书名、原文书名和作者，在本地生成 1600×2400 排版封面，不使用第三方美术素材；
 - 渲染 Markdown，并在安装出版工具后导出带封面的 EPUB 与带目录/书签的 PDF。
 
+## OCR/PDF 章节恢复架构
+
+v0.9 起，章节恢复采用“多证据、单一树构建器”的方式，而不是把另一个文档解析器生成的树直接覆盖现有结果：
+
+1. **PaddleOCR/PP-DocLayout evidence**：直接使用 `doc_title`、`paragraph_title`、`table of contents`、页码和 bbox；没有“Contents”文字但 layout model 已标成 TOC 的页面也能进入目录解析。
+2. **PyMuPDF evidence**：读取 PDF bookmark、字体/大字号行，并负责把 PDF 页渲染成 Vision 输入。
+3. **DeepSeek Vision**：识别真实 TOC 页、目录层级和页码；正文只扫描规则/PDF evidence 筛出的候选页，寻找 TOC 没列出的二级/三级标题。
+4. **现有 deterministic recovery**：把 Vision sidecar 与 OCR/PDF 证据放回原来的 page-map、global monotone TOC alignment、numbering/style hierarchy 和 validator 中统一落树。
+5. **人工结构门禁**：Vision 与 OCR 同页文本匹配时可以成为强证据；Vision 独自看到、OCR 完全没有文本匹配的标题只生成低置信度 review candidate。
+
+这种设计吸收了 Docling heading-hierarchy 常用的 bookmark → numbering → visual style 信号顺序，但没有把整个 Docling 依赖栈打进 Windows EXE，以免和现有 chapter recovery 重复。需要最大召回时可在 `chapter_config.json` 中把 `vision.scan_all_body_pages` 设为 `true`；默认上限是 120 个正文候选页。
+
 ## 方式一：CLI
 
 需要 Python 3.9+。在仓库根目录安装：
