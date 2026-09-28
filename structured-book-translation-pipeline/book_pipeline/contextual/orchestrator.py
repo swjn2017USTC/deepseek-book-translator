@@ -541,6 +541,16 @@ def _translate_parallel(
     return translated
 
 
+def current_segment_ids(config: Dict[str, Any]) -> List[str]:
+    """Return current contextual-v2 segment ids without making provider calls."""
+    prepared = _prepare(config)
+    return [
+        segment.id
+        for segment in prepared["segments"]
+        if segment.translatable and prepared["current"](segment)
+    ]
+
+
 def translate_v2(
     config: Dict[str, Any],
     client: Optional[ChatClient] = None,
