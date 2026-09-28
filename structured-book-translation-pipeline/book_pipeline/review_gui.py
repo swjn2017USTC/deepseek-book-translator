@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .io_utils import read_jsonl, write_jsonl
 
@@ -118,7 +118,7 @@ class ReviewWindow:
         project: Path,
         kind: str,
         run_action: Callable[[str, Callable[[], Any]], None],
-        post_compile_prepare: Callable[[], Any] | None = None,
+        post_compile_prepare: Optional[Callable[[], Any]] = None,
     ):
         import tkinter as tk
         from tkinter import ttk
