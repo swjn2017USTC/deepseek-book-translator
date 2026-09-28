@@ -44,6 +44,8 @@ def _vision_settings(chapter_config: Dict[str, Any]) -> Dict[str, Any]:
     settings.setdefault("max_body_pages", 120)
     settings.setdefault("scan_all_body_pages", False)
     settings.setdefault("render_dpi", 120)
+    settings.setdefault("max_tokens", 4096)
+    settings.setdefault("temperature", 0.0)
     settings.setdefault("structured_retries", 3)
     settings.setdefault("toc_page_min_confidence", 0.70)
     settings.setdefault("toc_entry_min_confidence", 0.72)
@@ -58,6 +60,8 @@ def _client(provider: Dict[str, Any], settings: Dict[str, Any]) -> OpenAICompati
     value["thinking_mode"] = "disabled"
     value["thinking_env"] = "DEEPSEEK_VISION_THINKING_MODE"
     value["native_json_mode"] = True
+    value["max_tokens"] = int(settings.get("max_tokens", 4096))
+    value["temperature"] = float(settings.get("temperature", 0.0))
     return OpenAICompatibleClient(value)
 
 
