@@ -1,6 +1,6 @@
 # DeepSeek Book Translator
 
-一个面向长篇书籍的可审计翻译工作台：从 PaddleOCR JSON 恢复章节树，经结构与术语门禁后调用 DeepSeek 官方 API 翻译，支持断点续跑、本地生成排版封面，并输出 Markdown、PDF 与 EPUB。
+一个面向长篇书籍的可审计翻译工作台：既可从 PaddleOCR JSON 恢复章节树，也可直接读取并保留原包结构翻译 reflowable EPUB；经结构/兼容性与术语门禁后调用 DeepSeek 官方 API，支持断点续跑，并输出 Markdown、PDF 或原生回写后的 EPUB。
 
 本仓库提供三种入口：
 
@@ -20,6 +20,7 @@
 ## 能力
 
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
+- 直接翻译 native EPUB：保留 OPF/spine/nav、DOM 层级、链接、脚注、表格、内嵌封面和非文本资源，只回写可翻译文本槽；
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
 - 生成并审核书籍术语表，将术语版本绑定到翻译缓存；
 - 通过 `DEEPSEEK_API_KEY` 调用 DeepSeek 官方 Chat Completions API；
@@ -85,6 +86,63 @@ PDF/EPUB 导出还需要 Pandoc、XeLaTeX、可用的中文字体和 EPUBCheck�
 ```bash
 python3 new_book.py export --project books/my-book --format both
 ```
+
+
+### 直接翻译 EPUB（保留原 EPUB 结构）
+
+如果手头已经有可重排（reflowable）的 EPUB，不需要先转成 PDF、截图或 OCR JSON。native EPUB 路径会直接读取 OCF/OPF、spine、导航与 XHTML，把正文和可翻译属性拆成稳定 segment，翻译后再写回原 DOM 槽位并重新打包。原始 EPUB 始终只读。
+
+初始化时把 `--input-json` 换成 `--input-epub`：
+
+```bash
+cd structured-book-translation-pipeline
+python3 new_book.py init \
+  --input-epub /绝对路径/book.epub \
+  --book-id my-epub-book \
+  --book-title 'Original Title' \
+  --book-title-zh '中文书名' \
+  --author 'Author Name' \
+  --source-lang '英语' \
+  --target-lang '简体中文'
+
+python3 new_book.py prepare --project books/my-epub-book
+python3 new_book.py status --project books/my-epub-book
+```
+
+`prepare` 会先检查 ZIP/OCF、OPF manifest/spine、导航目标、内部链接、远程资源、脚本、fixed-layout、media overlay、加密状态等。当前正式翻译路径只接受 `COMPATIBLE_REFLOWABLE`；加密 EPUB、纯图片 EPUB、fixed-layout 或其他需要兼容性复核的包会 fail closed，并在 `structure/compatibility_report.json` 中说明原因。纯图片 EPUB 应先走 OCR 路径。
+
+EPUB 中的 inline 标签会被编译成内部保护令牌，例如 `[[EPUB:0:OPEN:em]]`。这些令牌不是正文，不要手工删除或修改；翻译器会逐次验证它们的身份、顺序、嵌套关系以及 URL、脚注、表格和 DOM slot 是否仍可无歧义回写。
+
+术语审核通过后，翻译方式与 OCR 项目一致：
+
+```bash
+export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
+python3 new_book.py preflight --project books/my-epub-book
+python3 new_book.py translate --project books/my-epub-book --target-completed 10
+python3 new_book.py status --project books/my-epub-book
+
+# 小样确认后逐步扩大
+python3 new_book.py translate --project books/my-epub-book --target-completed 100
+python3 new_book.py translate --project books/my-epub-book --all
+```
+
+完成率达到 100% 后直接 native render：
+
+```bash
+python3 new_book.py render --project books/my-epub-book
+```
+
+正式结果写入：
+
+```text
+books/my-epub-book/exports/my-epub-book.zh-CN.epub
+```
+
+也可以使用 `python3 new_book.py export --project books/my-epub-book --format epub`。native EPUB 路径不会通过 Pandoc 重新生成一本新书，也不会生成 PDF；它会保留原包中的图片、字体、CSS、封面和其他 opaque resource。只有被记录为可翻译的 XHTML 文本/属性槽以及必要的中文标题、语言 metadata 会发生受控变更。
+
+正式 EPUB 交付默认要求 EPUBCheck。可把 `EPUBCHECK_JAR` 指向 EPUBCheck jar，或让 `epubcheck` 位于 PATH。**native EPUB 翻译本身不需要 Pandoc 或 XeLaTeX**；这两项只用于 OCR/Markdown 路径的 PDF/EPUB 出版。
+
+目前 native EPUB 输入已通过 CLI、Coding Agent 和 Agent Skill 暴露；Windows EXE 的文件选择界面仍以 OCR JSON 为主，直接翻译 EPUB 时优先使用上述 CLI/Agent 工作流。
 
 ## 方式二：Coding Agent
 
