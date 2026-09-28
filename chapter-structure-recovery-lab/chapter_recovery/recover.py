@@ -149,6 +149,8 @@ def _normalize_standard_hierarchy(
 
 def _macro_level(entry: TocEntry) -> int:
     parsed = numbering(entry.title)
+    if entry.source_level is not None and "deepseek_vision_toc" in entry.provenance:
+        return min(6, max(2, 1 + int(entry.source_level)))
     if entry.kind == "section" and parsed and parsed.family == "decimal":
         return min(6, 2 + parsed.depth)
     if entry.kind in {"section", "part_intro"}:
