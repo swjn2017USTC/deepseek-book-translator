@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from ..models import Segment
+from ..epub.translation import epub_cache_metadata, is_epub_segment
 
 
 def record_row(
@@ -27,6 +28,20 @@ def record_row(
     deps: Dict[str, int],
 ) -> Dict[str, Any]:
     """Build the v1-compatible superset record for one completed segment."""
+    metadata = {
+        "chapter_id": chapter_id,
+        "brief_hash": brief_hash,
+        "prompt_version": prompt_version,
+        "context_mode": "contextual_v2",
+        "glossary_dependencies": dict(deps),
+    }
+    if is_epub_segment(segment):
+        metadata.update(epub_cache_metadata(
+            segment,
+            prompt_version=prompt_version,
+            chapter_dependency=chapter_id,
+            glossary_dependencies=deps,
+        ))
     return {
         "segment_id": segment.id,
         "source_hash": segment.source_hash,
@@ -36,11 +51,5 @@ def record_row(
         "attempt": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "glossary_sha256": glossary_sha256,
-        "metadata": {
-            "chapter_id": chapter_id,
-            "brief_hash": brief_hash,
-            "prompt_version": prompt_version,
-            "context_mode": "contextual_v2",
-            "glossary_dependencies": dict(deps),
-        },
+        "metadata": metadata,
     }

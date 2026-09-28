@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from ..models import Segment
+from ..epub.translation import epub_cache_current, is_epub_segment
 from .briefs import chapter_id_for_segment, zone_bucket_id
 from .deps import concept_version
 from .prompts import PROMPTS_VERSION
@@ -79,7 +80,17 @@ def is_translation_current_v2(
     dependencies = metadata.get("glossary_dependencies") or {}
     if not isinstance(dependencies, dict):
         return False
-    return all(
+    if not all(
         concept_versions.get(concept_id) == version
         for concept_id, version in dependencies.items()
-    )
+    ):
+        return False
+    if is_epub_segment(segment):
+        return epub_cache_current(
+            segment,
+            metadata,
+            prompt_version=PROMPTS_VERSION,
+            chapter_dependency=brief_key_for_segment(segment, nodes_by_id),
+            concept_versions=concept_versions,
+        )
+    return True

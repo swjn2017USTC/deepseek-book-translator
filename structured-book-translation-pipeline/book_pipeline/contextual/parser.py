@@ -20,6 +20,7 @@ import re
 from typing import Any
 
 from ..models import Segment
+from ..epub.translation import validate_epub_translation
 from ..translate import STRUCTURAL_TOKEN  # read-only regex reuse; v1 untouched
 
 # Provider tool-call framing noise.  A provider's JSON response sometimes
@@ -71,7 +72,9 @@ def parse_target_only(content: str, target: Segment) -> str:
     )
     if not text.strip():
         raise ValueError(f"Empty translation for {target.id}")
-    return _verify_structural_tokens(target, text)
+    text = _verify_structural_tokens(target, text)
+    validate_epub_translation(target, text)
+    return text
 
 
 def _items(data: Any) -> Any:
@@ -94,7 +97,7 @@ def _items(data: Any) -> Any:
     return None
 
 
-def _verify_structural_tokens(target: Segment, translated_text: str) -> None:
+def _verify_structural_tokens(target: Segment, translated_text: str) -> str:
     def _norm_ws(token: str) -> str:
         """Whitespace-only normalization: used for the verbatim re-write below,
         which must stay limited to tokens that are semantically the SAME token

@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from .config import resolve_path
 from .io_utils import read_jsonl, write_json, write_jsonl
+from .epub.tokens import strip_tokens
 
 
 DEFAULT_MASTER = Path(__file__).resolve().parents[1] / "glossary_master.json"
@@ -67,6 +68,14 @@ def _normal(text: str) -> str:
     return re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip()
 
 
+def _logical_source(segment: Dict[str, Any]) -> str:
+    text = str(segment.get("source_text") or "")
+    metadata = segment.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("source_adapter") == "epub_native_v1":
+        return strip_tokens(text)
+    return text
+
+
 def _phrase_pattern(term: str) -> re.Pattern[str]:
     tokens = re.findall(r"[\wÀ-ÖØ-öø-ÿĀ-ž]+(?:[’'][\wÀ-ÖØ-öø-ÿĀ-ž]+)?", term)
     body = r"(?:[\s\-–—,]+)".join(re.escape(token) for token in tokens)
@@ -79,7 +88,7 @@ def _matching_segments(term: str, segments: Sequence[Dict[str, Any]], case_sensi
     pattern = _phrase_pattern(term)
     result = []
     for segment in segments:
-        source = str(segment.get("source_text") or "")
+        source = _logical_source(segment)
         if case_sensitive:
             tokens = re.findall(r"[\wÀ-ÖØ-öø-ÿĀ-ž]+", term)
             body = r"(?:[\s\-–—,]+)".join(re.escape(token) for token in tokens)
@@ -181,8 +190,8 @@ def _candidate_sources(config: Dict[str, Any], segments: Sequence[Dict[str, Any]
     title = str(config.get("book_title") or "").strip()
     if title:
         for segment in segments:
-            if _normal(title) in _normal(str(segment.get("source_text") or "")):
-                add(title, "book_title_term", str(segment.get("id") or ""), str(segment.get("source_text") or ""), 100)
+            if _normal(title) in _normal(_logical_source(segment)):
+                add(title, "book_title_term", str(segment.get("id") or ""), _logical_source(segment), 100)
                 break
     for seeded in _settings(config).get("seed_terms", []):
         term = str(seeded).strip()
@@ -195,7 +204,7 @@ def _candidate_sources(config: Dict[str, Any], segments: Sequence[Dict[str, Any]
     ngrams: Counter[Tuple[str, ...]] = Counter()
     locations: Dict[Tuple[str, ...], List[Tuple[str, str]]] = defaultdict(list)
     for segment in segments:
-        source = re.sub(r"\s+", " ", str(segment.get("source_text") or "")).strip()
+        source = re.sub(r"\s+", " ", _logical_source(segment)).strip()
         segment_id = str(segment.get("id") or "")
         if not source:
             continue

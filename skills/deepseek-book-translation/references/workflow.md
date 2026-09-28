@@ -34,9 +34,12 @@ python3 new_book.py prepare --project '<PROJECT_DIR>'
 python3 new_book.py status --project '<PROJECT_DIR>'
 ```
 
-Inspect the compatibility disposition first. `BLOCKED` inputs cannot use this
-adapter; `PRESERVE_WITH_REVIEW` requires its review evidence. Do not route a
-native EPUB through the OCR/Pandoc path to clear a gate.
+Inspect the compatibility disposition first. The public native workflow currently
+proceeds only when the report is `COMPATIBLE_REFLOWABLE`. States such as
+`BLOCKED_ENCRYPTED_EPUB`, `NEEDS_OCR`,
+`NEEDS_USER_REVIEW_FIXED_LAYOUT`, or `NEEDS_COMPATIBILITY_REVIEW` fail
+closed; do not route the same EPUB through OCR/Pandoc merely to clear a native
+compatibility gate. Image-only books should explicitly switch to the OCR path.
 
 ## Structure gate
 
@@ -96,7 +99,16 @@ For native EPUB publication, require complete current coverage plus unchanged
 package/resource/link/table/footnote structure. Protected `[[EPUB:...]]`
 tokens must remain in the same order and nesting; failed responses are retried
 with the structural error while preserving checkpoints. A provider timeout is
-resumable incomplete state, not a release pass.
+resumable incomplete state, not a release pass. Finish native EPUB projects with:
+
+```bash
+python3 new_book.py render --project '<PROJECT_DIR>'
+# equivalent explicit publication entry:
+python3 new_book.py export --project '<PROJECT_DIR>' --format epub
+```
+
+The native adapter preserves the embedded cover and opaque resources and does
+not require Pandoc/XeLaTeX. EPUBCheck remains the formal publication gate.
 
 ## Existing local provider profile
 
