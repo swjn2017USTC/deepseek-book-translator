@@ -74,11 +74,14 @@ def initialize_project(
     domain: str = "学术人文社科",
     author: str = "",
     toc_search_end: int = 30,
+    thinking_mode: str = "disabled",
 ) -> Dict[str, Any]:
     if not BOOK_ID.fullmatch(book_id):
         raise ValueError("book_id may contain only lowercase letters, digits, hyphen, and underscore")
     if toc_search_end < 0:
         raise ValueError("toc_search_end must be non-negative")
+    if thinking_mode not in {"disabled", "low", "high", "max"}:
+        raise ValueError("thinking_mode must be one of: disabled, low, high, max")
     input_path = input_json.expanduser().resolve()
     _validate_ocr_path(input_path)
     project_path = (project_dir or (ROOT / "books" / book_id)).expanduser().resolve()
@@ -149,11 +152,13 @@ def initialize_project(
             # Public defaults stay serial because DeepSeek account limits vary.
             # Users may raise this after a successful smoke ladder.
             "max_workers": 1,
+            "max_parse_retries": 3,
         },
         "provider": {
             "api_url": "https://api.deepseek.com/chat/completions",
             "api_key_env": "DEEPSEEK_API_KEY",
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
+            "thinking_mode": thinking_mode,
             "auth_header": "Authorization",
             "auth_scheme": "Bearer",
             "requests_per_minute": 20,
@@ -428,20 +433,28 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
             is_translation_current(segment, completed.get(segment.id), cache_sha256)
         )
     ]
-    chunk = config.get("chunk", {})
-    batches = list(_batches(pending, int(chunk.get("max_chars", 10000)), int(chunk.get("max_segments", 20))))
+    contextual = (config.get("translation") or {}).get("context_mode") == "contextual_v2"
+    if contextual:
+        estimated_requests = len(pending)
+    else:
+        chunk = config.get("chunk", {})
+        estimated_requests = len(list(_batches(
+            pending, int(chunk.get("max_chars", 10000)), int(chunk.get("max_segments", 20))
+        )))
     status = translation_status(config)
     return {
         "schema_version": 1,
         "book_id": project["book_id"],
         "status": "preflight_passed",
         "model": client.model,
+        "thinking_mode": client.thinking_mode,
         "api_key_present": True,
         "external_requests_made": 0,
         "required_segments": status["required_segments"],
         "completed_segments": status["completed_segments"],
         "remaining_segments": status["remaining_segments"],
-        "estimated_remaining_batches": len(batches),
+        "estimated_remaining_requests": estimated_requests,
+        "estimated_remaining_batches": estimated_requests,
         "remaining_translatable_characters": sum(len(segment.source_text) for segment in pending),
     }
 
@@ -512,6 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--domain", default="学术人文社科")
     init.add_argument("--author", default="")
     init.add_argument("--toc-search-end", type=int, default=30)
+    init.add_argument("--thinking-mode", choices=("disabled", "low", "high", "max"), default="disabled")
     for name in ("prepare", "status", "preflight", "render"):
         command = commands.add_parser(name)
         command.add_argument("--project", type=Path, required=True)
@@ -565,6 +579,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             project_dir=args.project_dir, source_lang=args.source_lang,
             target_lang=args.target_lang, domain=args.domain, author=args.author,
             toc_search_end=args.toc_search_end,
+            thinking_mode=args.thinking_mode,
         )
     elif args.command == "prepare":
         result = prepare_project(args.project)
