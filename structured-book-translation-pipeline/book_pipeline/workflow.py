@@ -402,6 +402,16 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         status = "ready_to_render"
     else:
         status = "ready_to_translate"
+    cost = None
+    if translation and (config.get("translation") or {}).get("context_mode") == "contextual_v2":
+        from .cost_control import cost_report
+
+        cost = cost_report(
+            config,
+            output_dir / "usage.jsonl",
+            int(translation.get("remaining_segments") or 0),
+            completed_segments=int(translation.get("completed_segments") or 0),
+        )
     return {
         "schema_version": 1,
         "book_id": project["book_id"],
@@ -413,6 +423,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "glossary_ready": glossary_ready,
         "glossary_reason": glossary_reason,
         "translation": translation,
+        "cost": cost,
     }
 
 
