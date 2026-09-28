@@ -80,7 +80,7 @@ class TranslatorGUI:
         self.ttk = ttk
         self.root = root
         self.root.title("DeepSeek Book Translator")
-        self.root.geometry("980x760")
+        self.root.geometry("980x800")
         self.root.minsize(820, 650)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.busy = False
@@ -88,6 +88,7 @@ class TranslatorGUI:
         default_project = Path.home() / "Documents" / "DeepSeekBookTranslator" / "my-book"
         self.values: Dict[str, Any] = {
             "source": tk.StringVar(),
+            "vision_pdf": tk.StringVar(),
             "project": tk.StringVar(value=str(default_project)),
             "book_id": tk.StringVar(value="my-book"),
             "title": tk.StringVar(),
@@ -108,28 +109,29 @@ class TranslatorGUI:
         outer.columnconfigure(1, weight=1)
 
         self._path_row(outer, 0, "输入文件 (JSON / EPUB)", "source", self._browse_source)
-        self._path_row(outer, 1, "项目目录", "project", self._browse_project)
-        self._entry_row(outer, 2, "Book ID", "book_id")
-        self._entry_row(outer, 3, "原文书名", "title")
-        self._entry_row(outer, 4, "中文书名", "title_zh")
-        self._entry_row(outer, 5, "作者", "author")
-        self._entry_row(outer, 6, "领域", "domain")
+        self._path_row(outer, 1, "Vision PDF（可选）", "vision_pdf", self._browse_vision_pdf)
+        self._path_row(outer, 2, "项目目录", "project", self._browse_project)
+        self._entry_row(outer, 3, "Book ID", "book_id")
+        self._entry_row(outer, 4, "原文书名", "title")
+        self._entry_row(outer, 5, "中文书名", "title_zh")
+        self._entry_row(outer, 6, "作者", "author")
+        self._entry_row(outer, 7, "领域", "domain")
 
         language = ttk.Frame(outer)
-        language.grid(row=7, column=1, sticky="ew", pady=4)
+        language.grid(row=8, column=1, sticky="ew", pady=4)
         language.columnconfigure((0, 1), weight=1)
-        ttk.Label(outer, text="语言").grid(row=7, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(outer, text="语言").grid(row=8, column=0, sticky="w", padx=(0, 10))
         ttk.Entry(language, textvariable=self.values["source_lang"]).grid(row=0, column=0, sticky="ew", padx=(0, 5))
         ttk.Entry(language, textvariable=self.values["target_lang"]).grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
-        self._entry_row(outer, 8, "DeepSeek 模型", "model")
-        ttk.Label(outer, text="API Key").grid(row=9, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(outer, textvariable=self.values["api_key"], show="●").grid(row=9, column=1, sticky="ew", pady=4)
-        ttk.Label(outer, text="仅保存在本程序内存中，不写入项目文件", foreground="#555").grid(row=10, column=1, sticky="w")
+        self._entry_row(outer, 9, "DeepSeek 模型", "model")
+        ttk.Label(outer, text="API Key").grid(row=10, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(outer, textvariable=self.values["api_key"], show="●").grid(row=10, column=1, sticky="ew", pady=4)
+        ttk.Label(outer, text="仅保存在本程序内存中，不写入项目文件", foreground="#555").grid(row=11, column=1, sticky="w")
 
         options = ttk.Frame(outer)
-        options.grid(row=11, column=1, sticky="ew", pady=(6, 4))
-        ttk.Label(outer, text="运行参数").grid(row=11, column=0, sticky="w", padx=(0, 10))
+        options.grid(row=12, column=1, sticky="ew", pady=(6, 4))
+        ttk.Label(outer, text="运行参数").grid(row=12, column=0, sticky="w", padx=(0, 10))
         ttk.Label(options, text="思考模式").pack(side="left")
         ttk.Combobox(
             options, textvariable=self.values["thinking_mode"], width=10, state="readonly",
@@ -144,7 +146,7 @@ class TranslatorGUI:
         ).pack(side="left", padx=6)
 
         buttons = ttk.Frame(outer)
-        buttons.grid(row=12, column=0, columnspan=2, sticky="ew", pady=10)
+        buttons.grid(row=13, column=0, columnspan=2, sticky="ew", pady=10)
         actions = (
             ("1 初始化项目", self.create_project),
             ("2 准备/Vision章节/自动术语", self.prepare),
@@ -165,13 +167,13 @@ class TranslatorGUI:
         for column in range(5):
             buttons.columnconfigure(column, weight=1)
 
-        ttk.Label(outer, text="运行日志").grid(row=13, column=0, columnspan=2, sticky="w")
+        ttk.Label(outer, text="运行日志").grid(row=14, column=0, columnspan=2, sticky="w")
         self.log = tk.Text(outer, height=15, wrap="word", state="disabled")
-        self.log.grid(row=14, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
+        self.log.grid(row=15, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
         scrollbar = ttk.Scrollbar(outer, command=self.log.yview)
-        scrollbar.grid(row=14, column=2, sticky="ns")
+        scrollbar.grid(row=15, column=2, sticky="ns")
         self.log.configure(yscrollcommand=scrollbar.set)
-        outer.rowconfigure(14, weight=1)
+        outer.rowconfigure(15, weight=1)
         self.root.after(100, self._drain_events)
         self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。OCR 项目首次准备会先做离线章节恢复，再自动用 DeepSeek Vision 识别目录和遗漏小节；仍有歧义才需要人工章节审核，章节通过后术语继续自动处理。\n")
 
@@ -215,6 +217,16 @@ class TranslatorGUI:
         )
         if value:
             self.values["source"].set(value)
+
+    def _browse_vision_pdf(self) -> None:
+        from tkinter import filedialog
+
+        value = filedialog.askopenfilename(
+            title="选择与 OCR JSON 对应的原始 PDF（可选）",
+            filetypes=(("PDF", "*.pdf"), ("All files", "*.*")),
+        )
+        if value:
+            self.values["vision_pdf"].set(value)
 
     def _browse_project(self) -> None:
         from tkinter import filedialog
@@ -274,7 +286,9 @@ class TranslatorGUI:
             and not (project / "structure" / "vision_structure.json").is_file()
         ):
             self._api_environment()
-            vision = vision_enhance_project(project)
+            pdf_value = self.values["vision_pdf"].get().strip()
+            pdf_path = Path(pdf_value).expanduser().resolve() if pdf_value else None
+            vision = vision_enhance_project(project, pdf_path=pdf_path)
             first = vision["prepared"]
         if first.get("status") != "needs_glossary_review":
             return {
