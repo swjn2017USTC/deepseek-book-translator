@@ -104,7 +104,8 @@ def test_deepseek_official_defaults(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy-not-a-secret")
     client = OpenAICompatibleClient({})
     assert client.api_url == "https://api.deepseek.com/chat/completions"
-    assert client.model == "deepseek-v4-flash"
+    assert client.model == "deepseek-flash"
+    assert client.thinking_mode == "disabled"
     assert client.auth_header == "Authorization"
     assert client.auth_scheme == "Bearer"
 
@@ -307,3 +308,56 @@ def test_complete_wire_attempts_count_retries(monkeypatch):
     content, _ = client.complete("system", "user")
     assert content == "ok"
     assert client.wire_attempts == 3
+
+
+def test_complete_disables_thinking_by_default_and_json_mode_is_explicit(monkeypatch):
+    client = _client(monkeypatch)
+    payloads = []
+
+    def fake_urlopen(request, timeout):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeHTTPResponse('{"ok": true}')
+
+    monkeypatch.setattr(llm_client, "urlopen", fake_urlopen)
+    client.complete("system", "plain")
+    client.complete_json_text("system", '{"input": true}')
+
+    assert payloads[0]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payloads[0]
+    assert "response_format" not in payloads[0]
+    assert payloads[1]["thinking"] == {"type": "disabled"}
+    assert payloads[1]["response_format"] == {"type": "json_object"}
+
+
+def test_thinking_mode_can_be_enabled_or_overridden_by_environment(monkeypatch):
+    client = _client(monkeypatch, thinking_mode="low")
+    assert client.thinking_mode == "low"
+    monkeypatch.setenv("DEEPSEEK_THINKING_MODE", "high")
+    overridden = _client(monkeypatch, thinking_mode="disabled")
+    assert overridden.thinking_mode == "high"
+
+
+def test_aggregate_usage_preserves_retry_cost_and_reasoning_tokens():
+    usage = llm_client.aggregate_usage([
+        {
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 60,
+            "prompt_cache_miss_tokens": 40,
+            "completion_tokens": 30,
+            "completion_tokens_details": {"reasoning_tokens": 10},
+        },
+        {
+            "prompt_tokens": 120,
+            "prompt_cache_hit_tokens": 80,
+            "prompt_cache_miss_tokens": 40,
+            "completion_tokens": 40,
+            "completion_tokens_details": {"reasoning_tokens": 20},
+        },
+    ])
+    assert usage["request_count"] == 2
+    assert usage["prompt_tokens"] == 220
+    assert usage["prompt_cache_hit_tokens"] == 140
+    assert usage["prompt_cache_miss_tokens"] == 80
+    assert usage["completion_tokens"] == 70
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 30
+    assert usage["visible_completion_tokens"] == 40
