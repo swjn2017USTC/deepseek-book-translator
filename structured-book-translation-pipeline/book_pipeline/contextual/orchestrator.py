@@ -8,14 +8,15 @@ translation and per-segment concept dependencies (fine cache invalidation).
 The v2 path is purely additive: it reuses the v1 gates
 (``require_structure_gate`` / ``require_fresh_cleaning`` /
 ``require_ready_glossary`` / ``glossary_cache_sha``), the private loaders
-``translate._segments`` / ``translate._completed`` and the 10-attempt parse
-retry with ``last_invalid_response.txt``.  v1 ``translate.py`` / ``models.py``
+``translate._segments`` / ``translate._completed`` and bounded parse retries
+with ``last_invalid_response.txt``.  v1 ``translate.py`` / ``models.py``
 / ``glossary.py`` are read-only dependencies — no edits.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import threading
 import time
@@ -285,7 +286,7 @@ def _translate_one(
         failed_usage = aggregate_usage(usages)
         with _APPEND_LOCK:
             append_jsonl(prepared["usage_path"], [{
-                "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "batch": batch_index,
                 "model": client.model,
                 "segment_ids": [segment.id],
@@ -330,6 +331,7 @@ def _commit_target(
         "api_completion_requests": int((outcome["usage"] or {}).get("request_count") or outcome["attempts"]),
         "prompt_version": record["metadata"]["prompt_version"],
         "context_mode": record["metadata"]["context_mode"],
+        "status": "completed",
     }
     with _APPEND_LOCK:
         append_jsonl(prepared["usage_path"], [usage_row])
@@ -358,7 +360,12 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
     if deps_path.exists():
         artifact_names.append("contextual_deps.jsonl")
     from ..cost_control import cost_report
-    cost = cost_report(config, prepared["usage_path"], len(required) - len(current))
+    cost = cost_report(
+        config,
+        prepared["usage_path"],
+        len(required) - len(current),
+        completed_segments=len(current),
+    )
     return {
         "schema_version": 1,
         "book_id": config["book_id"],
