@@ -11,11 +11,11 @@ from typing import Any
 
 from .config import load_config
 from .io_utils import read_jsonl, write_json, write_jsonl
-from .review_gui import ReviewWindow, decision_from_fields
+from .review_gui import ReviewWindow
 from .render import render_book
 from .translate import translate_book
 from .workflow import (
-    compile_project_glossary, export_project, generate_project_cover,
+    auto_review_project_glossary, export_project, generate_project_cover,
     initialize_project, preflight_project, prepare_project,
 )
 
@@ -27,6 +27,31 @@ class SyntheticClient:
         payload = json.loads(user)
         rows = [{"id": row["id"], "translated_text": "译：" + row["text"]} for row in payload["segments"]]
         return json.dumps(rows, ensure_ascii=False), {"prompt_tokens": 0, "completion_tokens": 0}
+
+
+class SyntheticGlossaryClient:
+    model = "demo-fake-glossary-review"
+
+    def complete_json_text(self, _system: str, user: str) -> tuple[str, dict[str, int]]:
+        payload = json.loads(user)
+        decisions = [
+            {
+                "candidate_id": row["candidate_id"],
+                "decision": "reject",
+                "translation": "",
+                "category": "",
+                "alternatives": [],
+                "note": "",
+                "reason": "Synthetic fixture: not a reusable book-level term",
+                "confidence": 0.99,
+            }
+            for row in payload["candidates"]
+        ]
+        return json.dumps({"decisions": decisions}, ensure_ascii=False), {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
 
 
 def _sample_path() -> Path:
@@ -52,16 +77,13 @@ def run_offline_smoke() -> dict[str, Any]:
             candidates = list(read_jsonl(project / "glossary_candidates.jsonl"))
             if not candidates:
                 raise AssertionError("Synthetic sample must exercise the glossary review gate")
-            decisions = [decision_from_fields("glossary", row["candidate_id"], {
-                "decision": "reject", "reason": "Synthetic fixture: not a reusable book term",
-                "translation": "", "category": "", "evidence": "",
-            }) for row in candidates]
-            decisions_path = project / "glossary_decisions.jsonl"
-            write_jsonl(decisions_path, decisions)
-            compiled = compile_project_glossary(project, decisions_path)
+            automatic = auto_review_project_glossary(project, SyntheticGlossaryClient())
+            compiled = automatic["compiled"]
             prepared = prepare_project(project)
             if prepared["status"] != "ready_to_translate":
                 raise AssertionError(f"Review gate did not clear: {prepared['status']}")
+            if automatic["review"]["candidate_count"] != len(candidates):
+                raise AssertionError("Automatic glossary review did not cover all candidates")
             cover = generate_project_cover(project)
             if not Path(cover["image_path"]).is_file():
                 raise AssertionError("Cover not generated")
@@ -104,6 +126,7 @@ def run_offline_smoke() -> dict[str, Any]:
             return {
                 "status": "ok", "sample_pages": len(json.loads(sample.read_text(encoding="utf-8"))),
                 "glossary_candidates_reviewed": len(candidates),
+                "glossary_review_mode": "llm_auto",
                 "review_status": compiled["status"],
                 "cover_generated": True, "preflight_requests": 0,
                 "translated_segments": translated["completed_segments"],
