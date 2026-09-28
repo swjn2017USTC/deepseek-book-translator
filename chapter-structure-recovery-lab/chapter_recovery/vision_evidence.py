@@ -161,9 +161,10 @@ def inject_vision_headings(
     but OCR cannot match is added only at a stricter confidence threshold and
     later receives sub-review confidence rather than automatic acceptance.
     """
-    minimum = float(config.get("vision_heading_min_confidence", 0.72))
-    unmatched_minimum = float(config.get("vision_unmatched_heading_min_confidence", 0.90))
-    match_floor = float(config.get("vision_heading_text_match", 0.58))
+    settings = dict(config.get("vision") or {})
+    minimum = float(config.get("vision_heading_min_confidence", settings.get("heading_min_confidence", 0.72)))
+    unmatched_minimum = float(config.get("vision_unmatched_heading_min_confidence", settings.get("unmatched_heading_min_confidence", 0.90)))
+    match_floor = float(config.get("vision_heading_text_match", settings.get("heading_text_match", 0.58)))
     matched = 0
     synthetic = 0
     skipped = 0
