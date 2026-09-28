@@ -177,7 +177,7 @@ native EPUB 输入现已同时通过 CLI、Coding Agent、Agent Skill 和 Window
 
 ## 方式二：Coding Agent
 
-打开 [CODING_AGENT_PROMPT.md](CODING_AGENT_PROMPT.md)，把开头的 `<OCR_JSON_ABSOLUTE_PATH>` 替换成 OCR JSON 的绝对路径，然后把整段提示词交给能够访问本仓库和终端的 coding agent。
+打开 [CODING_AGENT_PROMPT.md](CODING_AGENT_PROMPT.md)，把开头的 `<BOOK_INPUT_ABSOLUTE_PATH>` 替换成 OCR JSON 或 reflowable EPUB 的绝对路径；OCR 项目若有对应 PDF，也让 agent 使用它做 Vision 结构增强。然后把整段提示词交给能够访问本仓库和终端的 coding agent。
 
 Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、离线章节恢复、DeepSeek Vision 结构增强、人工结构审核、LLM 自动术语审核、本地封面生成、零网络预检、分级翻译、QA、渲染与导出。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
 
