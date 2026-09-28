@@ -239,6 +239,7 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert translation_config["provider"]["api_url"] == "https://api.deepseek.com/chat/completions"
     assert translation_config["provider"]["model"] == "deepseek-flash"
     assert translation_config["provider"]["thinking_mode"] == "disabled"
+    assert translation_config["provider"]["native_json_mode"] is True
     assert translation_config["provider"]["auth_header"] == "Authorization"
     assert translation_config["provider"]["auth_scheme"] == "Bearer"
     assert not any(key in translation_config["provider"] for key in ("api_key", "token", "secret"))
@@ -277,6 +278,8 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert prepared["translation"]["completed_segments"] == 0
     assert status["status"] == "ready_to_translate"
     assert status["cleaning_fresh"] is True
+    assert status["cost"]["pricing_supported"] is True
+    assert status["cost"]["model"] == "deepseek-flash"
     import book_pipeline.contextual as contextual
 
     called = {}
