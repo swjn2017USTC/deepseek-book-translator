@@ -159,6 +159,7 @@ def initialize_project(
             "api_key_env": "DEEPSEEK_API_KEY",
             "model": "deepseek-flash",
             "thinking_mode": thinking_mode,
+            "native_json_mode": True,
             "auth_header": "Authorization",
             "auth_scheme": "Bearer",
             "requests_per_minute": 20,
