@@ -23,7 +23,7 @@
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
 - 生成并审核书籍术语表，将术语版本绑定到翻译缓存；
 - 通过 `DEEPSEEK_API_KEY` 调用 DeepSeek 官方 Chat Completions API；
-- 按累计目标断点续跑，保留逐段译文和 token usage；
+- 按累计目标断点续跑，保留逐段译文、完整重试 token usage、缓存命中率、推理 token 与成本估算；
 - 校验脚注、HTML 注释、公式、URL、Markdown 表格等结构令牌；
 - 根据书名、原文书名和作者，在本地生成 1600×2400 排版封面，不使用第三方美术素材；
 - 渲染 Markdown，并在安装出版工具后导出带封面的 EPUB 与带目录/书签的 PDF。
@@ -71,7 +71,7 @@ python3 new_book.py translate --project books/my-book --target-completed 10
 python3 new_book.py status --project books/my-book
 ```
 
-`preflight` 不联网。`translate` 才发送文本并可能产生费用；建议按 `10 → 100 → 500 → --all` 逐步扩大。完成后运行：
+`preflight` 不联网，并会给出 contextual v2 的真实预计请求数（该模式下通常 1 个待翻译片段对应 1 次模型请求）。`translate` 才发送文本并可能产生费用；建议按 `10 → 100 → 500 → --all` 逐步扩大。10/100 段后优先检查 `cost.usage.reasoning_tokens`、`cache_hit_ratio`、`retry_rate` 与 `projected_total_cost_rmb_at_current_average`；若 reasoning token 非零或重试率异常，应先排查配置再继续整本。完成后运行：
 
 ```bash
 python3 new_book.py render --project books/my-book
@@ -94,7 +94,7 @@ Agent 会先从书名页、版权页和目录推断书名、作者、语言、�
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 
-新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。
+新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；默认 `thinking_mode=disabled`，翻译 JSON 使用 provider 原生 JSON mode，并将解析重试上限设为 3。公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。每次完成翻译后会在状态结果中附带 `cost` 诊断，汇总 cache hit/miss、reasoning tokens、retry rate 以及按当前均值估算的整本成本。
 
 ## 方式三：Agent Skill
 
@@ -144,7 +144,7 @@ Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 
 - OCR JSON 文件选择；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
-- DeepSeek 模型及隐藏显示的 API key 输入；
+- DeepSeek 模型、思考模式（默认 disabled）及隐藏显示的 API key 输入；
 - 初始化、准备、逐项章节/术语审核、自动封面、零网络预检、分批翻译、状态、Markdown 渲染和 PDF/EPUB 导出按钮；
 - 运行日志和项目目录快捷打开。
 
@@ -185,7 +185,7 @@ python3 deepseek_book_translator_gui.py
 
 ## DeepSeek 配置与安全
 
-默认端点为 `https://api.deepseek.com/chat/completions`，默认模型为 `deepseek-v4-flash`，鉴权为 `Authorization: Bearer <key>`。key 只从 `DEEPSEEK_API_KEY` 环境变量读取；配置加载器拒绝配置文件中的密钥值。模型也可以通过 `DEEPSEEK_MODEL` 或书籍项目的 `provider.model` 设置。模型名称和 API 参数以 [DeepSeek 官方文档](https://api-docs.deepseek.com/guides/function_calling) 为准。
+默认端点为 `https://api.deepseek.com/chat/completions`，默认模型为 `deepseek-flash`，鉴权为 `Authorization: Bearer <key>`。key 只从 `DEEPSEEK_API_KEY` 环境变量读取；配置加载器拒绝配置文件中的密钥值。模型也可以通过 `DEEPSEEK_MODEL` 或书籍项目的 `provider.model` 设置。翻译默认显式关闭 thinking；可在项目配置的 `provider.thinking_mode` 或环境变量 `DEEPSEEK_THINKING_MODE` 中改为 `low`、`high`、`max`。对于普通长篇翻译建议保持 `disabled`，只在确有推理需要时开启。模型名称和 API 参数以 [DeepSeek 官方文档](https://api-docs.deepseek.com/guides/thinking_mode) 为准。
 
 GUI 输入的 key 只放在当前进程内存和环境中，不保存到书籍项目。不要提交 `.env`、OCR、译文、术语库、封面或导出文件；使用自定义目录时仍应在 push 前检查 `git status` 和 `git diff --cached`。
 

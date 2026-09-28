@@ -703,6 +703,9 @@ def test_translate_v2_fixture_end_to_end_records_and_idempotent_resume(tmp_path)
     for row in usage_rows:
         assert row["prompt_version"] == PROMPTS_VERSION
         assert row["context_mode"] == "contextual_v2"
+        assert row["parse_attempts"] == 1
+        assert row["usage"]["request_count"] == 1
+        assert row["usage"]["prompt_cache_miss_tokens"] == row["usage"]["prompt_tokens"]
     structure = structure_from_disk(config)
     briefs = build_chapter_briefs(structure, make_segments())
     for row in rows:
@@ -770,6 +773,10 @@ def test_translate_v2_parse_retries_bounded_and_no_fabricated_record(tmp_path):
     invalid_file = Path(config["output_dir"]) / "last_invalid_response.txt"
     assert invalid_file.exists() and invalid_file.read_text(encoding="utf-8").strip()
     assert len(list(read_jsonl(Path(config["output_dir"]) / "translations.jsonl"))) == 0
+    failed_usage = list(read_jsonl(Path(config["output_dir"]) / "usage.jsonl"))
+    assert failed_usage[-1]["status"] == "failed_validation"
+    assert failed_usage[-1]["parse_attempts"] == 3
+    assert failed_usage[-1]["usage"]["request_count"] == 3
     bad_json = ContextualFakeClient(mode="not-json")
     with pytest.raises(RuntimeError):
         translate_v2(config, bad_json, limit=1)

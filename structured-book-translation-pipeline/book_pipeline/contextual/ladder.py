@@ -135,7 +135,7 @@ def run_ladder(
             row = {
                 "step": step,
                 "success": False,
-                "retries": 10,
+                "retries": int(prepared["settings"].get("max_parse_retries", 3)),
                 "latency_s": round(time.monotonic() - started, 3),
                 "tokens": {"prompt": None, "completion": None},
                 "glossary_violations": [],

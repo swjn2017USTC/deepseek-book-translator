@@ -12,9 +12,10 @@ import json
 import os
 import re
 import time
-from typing import Any, Dict, Optional, Tuple, Type, TypeVar
+from typing import Any, Dict, Iterable, Optional, Tuple, Type, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 try:  # pydantic is an optional runtime dependency for structured completion.
     from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -24,6 +25,47 @@ except ImportError:  # pragma: no cover - exercised only in minimal installs
 
 
 ModelT = TypeVar("ModelT")
+
+
+def aggregate_usage(usages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Sum billable usage across every successful provider completion.
+
+    Parse/validation retries are separate billable completions.  Returning only
+    the final attempt materially under-reports cost, so callers use this helper
+    whenever one logical operation can make more than one completion request.
+    Missing cache-detail fields are treated conservatively as cache misses.
+    """
+    rows = [dict(usage or {}) for usage in usages]
+    prompt_tokens = sum(int(row.get("prompt_tokens") or 0) for row in rows)
+    completion_tokens = sum(int(row.get("completion_tokens") or 0) for row in rows)
+    total_tokens = sum(
+        int(row.get("total_tokens") or (int(row.get("prompt_tokens") or 0) + int(row.get("completion_tokens") or 0)))
+        for row in rows
+    )
+    cache_hit = sum(int(row.get("prompt_cache_hit_tokens") or 0) for row in rows)
+    cache_miss = 0
+    reasoning_tokens = 0
+    for row in rows:
+        if "prompt_cache_miss_tokens" in row:
+            cache_miss += int(row.get("prompt_cache_miss_tokens") or 0)
+        else:
+            cache_miss += max(0, int(row.get("prompt_tokens") or 0) - int(row.get("prompt_cache_hit_tokens") or 0))
+        details = row.get("completion_tokens_details") or {}
+        reasoning_tokens += int(details.get("reasoning_tokens") or 0)
+    prompt_accounted = cache_hit + cache_miss
+    cache_hit_ratio = (cache_hit / prompt_accounted) if prompt_accounted else None
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "prompt_cache_hit_tokens": cache_hit,
+        "prompt_cache_miss_tokens": cache_miss,
+        "prompt_tokens_details": {"cached_tokens": cache_hit},
+        "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        "visible_completion_tokens": max(0, completion_tokens - reasoning_tokens),
+        "request_count": len(rows),
+        "cache_hit_ratio": round(cache_hit_ratio, 6) if cache_hit_ratio is not None else None,
+    }
 
 
 class _ExactHeaderName(str):
@@ -47,9 +89,10 @@ class OpenAICompatibleClient:
         key_env = str(provider.get("api_key_env") or "DEEPSEEK_API_KEY")
         url_env = str(provider.get("api_url_env") or "DEEPSEEK_API_URL")
         model_env = str(provider.get("model_env") or "DEEPSEEK_MODEL")
+        thinking_env = str(provider.get("thinking_env") or "DEEPSEEK_THINKING_MODE")
         self.api_key = os.environ.get(key_env, "")
         self.api_url = os.environ.get(url_env) or str(provider.get("api_url") or "https://api.deepseek.com/chat/completions")
-        self.model = os.environ.get(model_env) or str(provider.get("model") or "deepseek-v4-flash")
+        self.model = os.environ.get(model_env) or str(provider.get("model") or "deepseek-flash")
         if not self.api_key:
             raise RuntimeError(f"Missing API key environment variable: {key_env}")
         if self.api_key != self.api_key.strip():
@@ -70,6 +113,22 @@ class OpenAICompatibleClient:
         self.max_tokens = int(provider.get("max_tokens", 8192))
         self.temperature = float(provider.get("temperature", 0.2))
         self.retries = int(provider.get("retries", 5))
+        hostname = (urlparse(self.api_url).hostname or "").lower()
+        self.is_deepseek = hostname == "api.deepseek.com" or hostname.endswith(".deepseek.com")
+        configured_thinking = os.environ.get(thinking_env)
+        if configured_thinking is None:
+            configured_thinking = provider.get("thinking_mode")
+        if configured_thinking is None and self.is_deepseek:
+            configured_thinking = "disabled"
+        self.thinking_mode = (
+            str(configured_thinking).strip().lower()
+            if configured_thinking is not None
+            else None
+        )
+        if self.thinking_mode is not None and self.thinking_mode not in {"disabled", "low", "high", "max"}:
+            raise ValueError("provider.thinking_mode must be one of: disabled, low, high, max")
+        native_json_setting = provider.get("native_json_mode")
+        self.native_json_mode = self.is_deepseek if native_json_setting is None else bool(native_json_setting)
         # Monotonic wire-request counter: every actual HTTP POST attempt this
         # client instance makes (including complete_json re-requests). Lets the
         # resolver meter the true request budget (reviewer MAJOR finding: step
@@ -77,12 +136,25 @@ class OpenAICompatibleClient:
         self.wire_attempts = 0
 
     def complete(self, system: str, user: str) -> Tuple[str, Dict[str, Any]]:
-        payload = {
+        return self._complete(system, user, json_mode=False)
+
+    def complete_json_text(self, system: str, user: str) -> Tuple[str, Dict[str, Any]]:
+        """Return raw JSON text while enabling the provider's native JSON mode."""
+        return self._complete(system, user, json_mode=True)
+
+    def _complete(self, system: str, user: str, *, json_mode: bool) -> Tuple[str, Dict[str, Any]]:
+        payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if self.thinking_mode is not None:
+            payload["thinking"] = {"type": "disabled" if self.thinking_mode == "disabled" else "enabled"}
+            if self.thinking_mode != "disabled":
+                payload["reasoning_effort"] = self.thinking_mode
+        if json_mode and self.native_json_mode:
+            payload["response_format"] = {"type": "json_object"}
         auth = f"{self.auth_scheme} {self.api_key}".strip() if self.auth_scheme else self.api_key
         headers = {"Content-Type": "application/json"}
         for attempt in range(1, self.retries + 1):
@@ -95,11 +167,18 @@ class OpenAICompatibleClient:
                     data = json.loads(response.read().decode("utf-8"))
                 choice = data.get("choices", [{}])[0]
                 content = str(choice.get("message", {}).get("content") or "")
+                usage = dict(data.get("usage") or {})
+                # DeepSeek JSON mode can occasionally return empty content; a
+                # length-truncated JSON response is also unusable. Return an
+                # empty payload WITH usage so the structured caller can retry
+                # while still accounting for the billable completion.
+                if json_mode and (not content or choice.get("finish_reason") == "length"):
+                    return "", usage
                 if not content:
                     raise RuntimeError("Provider returned empty content")
                 if choice.get("finish_reason") == "length":
                     raise RuntimeError("Provider truncated the batch")
-                return content, dict(data.get("usage") or {})
+                return content, usage
             except HTTPError as exc:
                 if exc.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == self.retries:
                     detail = (
@@ -139,7 +218,8 @@ class OpenAICompatibleClient:
         """
         if BaseModel is None or ValidationError is None:  # pragma: no cover
             raise RuntimeError("pydantic is required for structured completion")
-        content, usage = self.complete(system, user)
+        content, usage = self.complete_json_text(system, user)
+        usages = [dict(usage)]
         last_error: Optional[BaseException] = None
         for attempt in range(1, decode_retries + 1):
             cleaned = content.strip()
@@ -148,13 +228,14 @@ class OpenAICompatibleClient:
                 cleaned = re.sub(r"\n?```\s*$", "", cleaned, flags=re.I)
             try:
                 data = json.loads(cleaned)
-                return TypeAdapter(model_cls).validate_python(data), dict(usage)
+                return TypeAdapter(model_cls).validate_python(data), aggregate_usage(usages)
             except (json.JSONDecodeError, ValidationError) as exc:
                 last_error = exc
                 if attempt == decode_retries:
                     break
                 try:
-                    content, usage = self.complete(system, user)
+                    content, usage = self.complete_json_text(system, user)
+                    usages.append(dict(usage))
                 except RuntimeError as provider_exc:
                     last_error = provider_exc
                     break

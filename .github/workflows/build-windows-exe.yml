@@ -1,6 +1,8 @@
 name: Build Windows EXE
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
     tags: ["v*"]
