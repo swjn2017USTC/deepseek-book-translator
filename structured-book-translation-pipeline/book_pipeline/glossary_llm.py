@@ -21,7 +21,7 @@ from .llm_client import ChatClient, OpenAICompatibleClient, aggregate_usage
 
 FENCE_MARK = chr(96) * 3
 FENCE = re.compile(
-    rf"^\\s*{re.escape(FENCE_MARK)}(?:json)?\\s*|\\s*{re.escape(FENCE_MARK)}\\s*$",
+    rf"^\s*{re.escape(FENCE_MARK)}(?:json)?\s*|\s*{re.escape(FENCE_MARK)}\s*$",
     re.I,
 )
 ALLOWED_DECISIONS = {"include", "reject"}
