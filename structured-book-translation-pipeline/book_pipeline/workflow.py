@@ -310,41 +310,50 @@ def initialize_project(
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
 
-1. 只做章节恢复和清理（不会调用模型）：
+1. 先做一次纯离线章节恢复和清理：
 
    `python3 {script} prepare --project {project_path}`
 
-2. 若状态为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
+2. 设置 `DEEPSEEK_API_KEY` 后运行 Vision 章节增强：
+
+   `python3 {script} vision-structure --project {project_path}`
+
+   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；没有同名 PDF 时退回 OCR JSON 的 `inputImage`。也可以显式指定：
+   `python3 {script} vision-structure --project {project_path} --pdf /path/to/source.pdf`
+
+   Vision 会识别目录页、抄录目录层级，并扫描 OCR/PDF 规则筛出的正文嫌疑页以补充目录未列出的次级节。结果保存在 `structure/vision_structure.json`，并绑定 OCR SHA-256。
+
+3. 若增强后仍为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
 
    `python3 {script} compile-reviews --project {project_path} --decisions {project_path / 'structure_decisions.jsonl'}`
 
-   然后重新执行 prepare。不得在裁决中创造标题文字。
+   然后重新执行 prepare。Vision 无 OCR 文本匹配的标题会保持低置信度等待人工复核，不得为了过门禁直接批准。
 
-3. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
+4. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
 
    `python3 {script} auto-glossary --project {project_path}`
 
    LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
 
-4. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
+5. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
 
    `python3 {script} preflight --project {project_path}`
 
-5. 建议先累计翻译 10 个片段，再逐步扩大：
+6. 建议先累计翻译 10 个片段，再逐步扩大：
 
    `python3 {script} translate --project {project_path} --target-completed 10`
 
    断点续跑时把累计目标改为 100、500 等。确认后整本运行使用显式 `--all`。
 
-6. 完成率达到 100% 后渲染：
+7. 完成率达到 100% 后渲染：
 
    `python3 {script} render --project {project_path}`
 
-7. 用本地排版生成器创建并登记封面：
+8. 用本地排版生成器创建并登记封面：
 
    `python3 {script} generate-cover --project {project_path} --theme auto`
 
-8. 生成带目录的 PDF 和带封面的 EPUB：
+9. 生成带目录的 PDF 和带封面的 EPUB：
 
    `python3 {script} export --project {project_path} --format both`
 """
