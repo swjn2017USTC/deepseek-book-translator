@@ -1,10 +1,10 @@
 # Coding Agent 端到端书籍翻译提示词
 
-把下面整段提示词交给能够读取文件和运行终端命令的 coding agent，并把第一行中的路径换成你的 OCR JSON 绝对路径。Agent 应在本仓库内工作。
+把下面整段提示词交给能够读取文件和运行终端命令的 coding agent，并把第一行中的路径换成你的 OCR JSON 或 EPUB 绝对路径。Agent 应在本仓库内工作。
 
 ---
 
-需要处理的 PaddleOCR JSON：`<OCR_JSON_ABSOLUTE_PATH>`
+需要处理的书籍输入：`<BOOK_INPUT_ABSOLUTE_PATH>`（PaddleOCR JSON 或 reflowable EPUB）
 
 请使用当前仓库的 `chapter-structure-recovery-lab` 与 `structured-book-translation-pipeline`，把这本书从 OCR JSON 处理为结构化中文译稿。你负责执行完整工作流、检查产物和报告仍需人工决定的问题。不要修改 OCR 原文件，不要把 OCR、译文、封面、API key 或其他私有数据提交到 Git。
 
@@ -14,7 +14,7 @@
 2. 只处理用户有权处理并发送给 DeepSeek API 的文本。
 3. API key 只能从进程环境变量 `DEEPSEEK_API_KEY` 读取。不要要求用户把 key 粘贴进对话，不要打印、记录或写入任何文件；如果变量未设置，停在零网络预检之前，给出设置命令。
 4. 不得为了过门禁而猜测章节、改写源标题或删除正文。结构证据不足时保留 `needs_human`，列出候选、上下文和建议，不擅自决定。
-5. 不得自动批准未经核对的术语。根据原文上下文决定 include/reject；存在多种合理译法时保留 `needs_human` 并询问用户。
+5. 术语候选默认交给仓库的 `auto-glossary` 让 DeepSeek 自动完成 include/reject 与统一译名；不要让用户逐条审核普通术语。模型决定必须保留审计记录。只有 API/结构化输出持续失败或用户明确要求覆盖某个决定时，才退回人工术语复核。
 6. 翻译使用项目配置中的 contextual v2，并按累计目标 `10 → 100 → 500 → all` 逐级进行。每一级检查状态、失败记录、结构令牌、术语一致性和异常译文；不要绕过断点续跑或质量门禁。公开默认单 worker；只有确认 DeepSeek 账户限制并通过 smoke 后才提高并发。
 7. 封面默认用本仓库的本地排版生成器，不下载第三方美术素材。用户明确提供合法图片时，才用 `set-cover` 登记其权利与来源。
 8. PDF/EPUB 导出依赖 Pandoc、XeLaTeX、中文字体和 EPUBCheck；新项目的 EPUB 必须校验通过。缺少依赖时仍须交付 Markdown，并准确报告未生成的格式。
@@ -74,18 +74,16 @@ python3 new_book.py prepare --project "<PROJECT_DIR>"
 
 重复直到门禁通过，或明确列出必须由用户处理的未决项。不得把未决项静默标为通过。
 
-## 第四步：术语审核
+## 第四步：LLM 自动术语审核
 
-读取 `glossary_candidates.jsonl`、`glossary_decisions.template.jsonl` 和候选出现的源片段。优先处理人物、机构、地名、核心概念和高频专门术语。已有可靠通行译名时 include；普通词、误抽取和无术语价值的片段 reject；有争议时 needs_human。
-
-把覆盖全部候选的决定写入 `glossary_decisions.jsonl`，然后运行：
+确认 `DEEPSEEK_API_KEY` 已设置，然后直接运行：
 
 ```bash
-python3 new_book.py compile-glossary \
-  --project "<PROJECT_DIR>" \
-  --decisions "<PROJECT_DIR>/glossary_decisions.jsonl"
+python3 new_book.py auto-glossary --project "<PROJECT_DIR>"
 python3 new_book.py prepare --project "<PROJECT_DIR>"
 ```
+
+自动流程会读取全部 `glossary_candidates.jsonl`，让 DeepSeek 对每项执行 include/reject，并为 include 项给出全书统一中文译名。低置信度项会自动进行第二轮复核。检查 `glossary_llm_review.jsonl` 与 `glossary_llm_usage.json` 是否完整覆盖候选；正常情况下不要让用户逐条术语审核。只有提供方不可用、JSON 结构持续失败或用户明确要求覆盖决定时，才使用人工 `compile-glossary` 路径。
 
 只有状态为 `ready_to_translate` 才能继续。
 
