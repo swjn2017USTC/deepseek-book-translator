@@ -55,15 +55,16 @@ Repeat only when new evidence-backed packets remain. Do not convert an uncertain
 
 ## Glossary gate
 
-Review every row in `glossary_candidates.jsonl` against its contexts. `include` requires a stable Chinese translation and evidence; `reject` requires a reason. Compile the complete decision file:
+Once the structure gate is clear, terminology review is automatic by default. With `DEEPSEEK_API_KEY` available, run:
 
 ```bash
-python3 new_book.py compile-glossary --project '<PROJECT_DIR>' \
-  --decisions '<PROJECT_DIR>/glossary_decisions.jsonl'
+python3 new_book.py auto-glossary --project '<PROJECT_DIR>'
 python3 new_book.py prepare --project '<PROJECT_DIR>'
 ```
 
-Proceed only at `ready_to_translate`.
+The deterministic candidate generator still defines the review set. DeepSeek must decide every candidate as `include` or `reject`; includes require a stable Chinese translation. Low-confidence first-pass decisions are automatically adjudicated a second time. The command writes `glossary_decisions.jsonl`, `glossary_llm_review.jsonl`, and `glossary_llm_usage.json`, then compiles the normal glossary gate.
+
+Do not ask the user to manually review ordinary terminology candidates. Use the manual `compile-glossary` path only when the provider is unavailable, structured validation repeatedly fails, or the user explicitly wants to override an automatic decision. Proceed only at `ready_to_translate`.
 
 ## Cover, preflight, and contextual translation
 
