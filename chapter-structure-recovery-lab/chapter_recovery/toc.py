@@ -7,6 +7,7 @@ from .models import Block, TocEntry
 
 
 TOC_TITLE = re.compile(r"^(contents|table of contents|inhalt|inhaltsverzeichnis|目录)$", re.I)
+TOC_LABELS = {"table of contents", "toc"}
 TOC_STOP_TITLE = re.compile(
     r"^(tables|list of tables|figures|list of figures|abbreviations|"
     r"acknowledg(?:e)?ments|表格|图表|插图|缩略语|致谢)$",
@@ -53,7 +54,11 @@ def find_toc_pages(
     start, end = int(search_range[0]), int(search_range[1])
     found = []
     for page_index in range(max(0, start), min(len(pages), end + 1)):
-        if any(TOC_TITLE.match(block.clean_content) for block in pages[page_index]):
+        if any(
+            TOC_TITLE.match(block.clean_content)
+            or block.label.casefold().replace("_", " ") in TOC_LABELS
+            for block in pages[page_index]
+        ):
             found.append(page_index)
     return found
 
@@ -140,7 +145,7 @@ def parse_toc_entries(pages: List[List[Block]], toc_pages: List[int]) -> List[To
     seen = set()
     ordered_pages = sorted(set(toc_pages))
     # Real exports mix content and text rows on the same TOC page.
-    allowed_labels = {"content", "text", "doc_title", "paragraph_title"}
+    allowed_labels = {"content", "text", "doc_title", "paragraph_title", "table of contents", "table_of_contents", "toc"}
     for page_index in ordered_pages:
         for block in pages[page_index]:
             if block.label not in allowed_labels:
