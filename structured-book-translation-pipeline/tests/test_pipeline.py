@@ -237,7 +237,8 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     )
     assert translation_config["provider"]["api_key_env"] == "DEEPSEEK_API_KEY"
     assert translation_config["provider"]["api_url"] == "https://api.deepseek.com/chat/completions"
-    assert translation_config["provider"]["model"] == "deepseek-v4-flash"
+    assert translation_config["provider"]["model"] == "deepseek-flash"
+    assert translation_config["provider"]["thinking_mode"] == "disabled"
     assert translation_config["provider"]["auth_header"] == "Authorization"
     assert translation_config["provider"]["auth_scheme"] == "Bearer"
     assert not any(key in translation_config["provider"] for key in ("api_key", "token", "secret"))
@@ -247,6 +248,7 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert translation["previous_translation_max_chars"] == 300
     assert translation["skip_failed_segments"] is True
     assert translation["max_workers"] == 1
+    assert translation["max_parse_retries"] == 3
     assert translation_config["publish"]["epubcheck"] == {
         "enabled": True, "require": True, "path": ""
     }
@@ -299,6 +301,8 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert preflight["status"] == "preflight_passed"
     assert preflight["external_requests_made"] == 0
     assert preflight["estimated_remaining_batches"] > 0
+    assert preflight["estimated_remaining_requests"] == preflight["remaining_segments"]
+    assert preflight["thinking_mode"] == "disabled"
     with pytest.raises(ValueError, match="target-completed"):
         translate_project(project_dir, target_completed=None, all_segments=False)
 
