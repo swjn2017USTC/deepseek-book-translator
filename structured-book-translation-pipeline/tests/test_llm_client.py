@@ -311,7 +311,7 @@ def test_complete_wire_attempts_count_retries(monkeypatch):
 
 
 def test_complete_disables_thinking_by_default_and_json_mode_is_explicit(monkeypatch):
-    client = _client(monkeypatch)
+    client = _client(monkeypatch, thinking_mode="disabled", native_json_mode=True)
     payloads = []
 
     def fake_urlopen(request, timeout):
@@ -361,3 +361,49 @@ def test_aggregate_usage_preserves_retry_cost_and_reasoning_tokens():
     assert usage["completion_tokens"] == 70
     assert usage["completion_tokens_details"]["reasoning_tokens"] == 30
     assert usage["visible_completion_tokens"] == 40
+
+
+def test_custom_openai_compatible_endpoint_does_not_receive_deepseek_only_fields(monkeypatch):
+    client = _client(monkeypatch)
+    payloads = []
+
+    def fake_urlopen(request, timeout):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeHTTPResponse(json.dumps({"kind": "chapter", "level": 2}))
+
+    monkeypatch.setattr(llm_client, "urlopen", fake_urlopen)
+    client.complete_json("system asks for JSON", "{}", _Model)
+
+    assert client.is_deepseek is False
+    assert client.thinking_mode is None
+    assert client.native_json_mode is False
+    assert "thinking" not in payloads[0]
+    assert "reasoning_effort" not in payloads[0]
+    assert "response_format" not in payloads[0]
+
+
+def test_complete_json_retries_empty_json_mode_response_and_counts_usage(monkeypatch):
+    client = _client(monkeypatch, thinking_mode="disabled", native_json_mode=True)
+    responses = [
+        _FakeHTTPResponse(""),
+        _FakeHTTPResponse(json.dumps({"kind": "chapter", "level": 3})),
+    ]
+
+    def fake_urlopen(request, timeout):
+        return responses.pop(0)
+
+    monkeypatch.setattr(llm_client, "urlopen", fake_urlopen)
+    model, usage = client.complete_json("return JSON", "{}", _Model, decode_retries=2)
+
+    assert model.level == 3
+    assert usage["request_count"] == 2
+    assert usage["prompt_tokens"] == 14
+    assert usage["completion_tokens"] == 18
+
+
+def test_aggregate_usage_total_tokens_falls_back_per_response():
+    usage = llm_client.aggregate_usage([
+        {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        {"prompt_tokens": 20, "completion_tokens": 7},
+    ])
+    assert usage["total_tokens"] == 42
