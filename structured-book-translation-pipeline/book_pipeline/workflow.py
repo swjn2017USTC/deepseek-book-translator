@@ -20,6 +20,7 @@ from .provenance import write_clean_manifest
 from .epub import inspect_epub, render_epub, segment_epub
 from .epub.tokens import strip_tokens
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
+from .glossary_llm import auto_review_glossary
 from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
@@ -193,6 +194,12 @@ def initialize_project(
             "candidate_limit": 80,
             "require_approval": True,
             "bind_translation_cache": True,
+            "llm_review": {
+                "enabled": True,
+                "batch_size": 12,
+                "structured_retries": 3,
+                "adjudicate_below": 0.78,
+            },
         },
         "chunk": {"max_chars": 6000, "max_segments": 10, "max_glossary_terms": 40},
         "translation": {
@@ -589,6 +596,48 @@ def compile_project_glossary(project_path: Path, decisions: Path) -> Dict[str, A
     return result
 
 
+def auto_review_project_glossary(
+    project_path: Path,
+    client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Resolve the glossary gate with the configured LLM, then compile it.
+
+    The deterministic candidate generator and existing compiler remain the
+    source of truth. The model only produces auditable include/reject decisions
+    and translations for generated candidates.
+    """
+    project = _project_manifest(project_path)
+    config = _translation_config(project)
+    require_structure_gate(config)
+    require_fresh_cleaning(config)
+    manifest = generate_glossary(config)
+    if manifest.get("approved"):
+        return {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": "already_approved",
+            "review": None,
+            "compiled": manifest,
+        }
+    settings = ((config.get("glossary_settings") or {}).get("llm_review") or {})
+    if settings and not bool(settings.get("enabled", True)):
+        raise RuntimeError("LLM glossary review is disabled in glossary_settings.llm_review")
+    review = auto_review_glossary(config, client=client)
+    decisions = Path(str(review["decisions_path"])).expanduser().resolve()
+    compiled = compile_glossary_decisions(config, decisions)
+    if not compiled.get("approved"):
+        raise RuntimeError(
+            f"LLM glossary review did not clear the gate: {compiled.get('unresolved_terms')} unresolved"
+        )
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "approved",
+        "review": review,
+        "compiled": compiled,
+    }
+
+
 def project_status(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     structure_dir = Path(project["structure_dir"])
@@ -805,6 +854,11 @@ def build_parser() -> argparse.ArgumentParser:
     compile_glossary = commands.add_parser("compile-glossary", help="compile reviewed terminology decisions")
     compile_glossary.add_argument("--project", type=Path, required=True)
     compile_glossary.add_argument("--decisions", type=Path, required=True)
+    auto_glossary = commands.add_parser(
+        "auto-glossary",
+        help="use DeepSeek to decide and compile all terminology candidates",
+    )
+    auto_glossary.add_argument("--project", type=Path, required=True)
     translate = commands.add_parser("translate")
     translate.add_argument("--project", type=Path, required=True)
     choice = translate.add_mutually_exclusive_group(required=True)
@@ -854,6 +908,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         result = generate_project_glossary(args.project, args.force)
     elif args.command == "compile-glossary":
         result = compile_project_glossary(args.project, args.decisions)
+    elif args.command == "auto-glossary":
+        result = auto_review_project_glossary(args.project)
     elif args.command == "status":
         result = project_status(args.project)
     elif args.command == "preflight":
