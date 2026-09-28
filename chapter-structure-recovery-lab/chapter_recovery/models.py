@@ -73,6 +73,7 @@ class TocEntry:
     source_page: int
     id: str = ""
     provenance: str = "ocr_toc"
+    source_level: Optional[int] = None
 
     def __post_init__(self) -> None:
         if not self.id:
