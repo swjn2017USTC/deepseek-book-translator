@@ -82,7 +82,78 @@ def test_cost_report_projects_from_completed_segments(tmp_path):
             "request_count": 1,
         },
     }) + "\n", encoding="utf-8")
-    report = cost_report({"provider": {}}, path, remaining_segments=9)
+    report = cost_report(
+        {"provider": {"model": "deepseek-flash"}},
+        path,
+        remaining_segments=9,
+        completed_segments=1,
+    )
     assert report["usage"]["segments"] == 1
     assert report["projected_total_cost_rmb_at_current_average"] is not None
     assert report["estimated_cost_rmb_if_peak"] >= report["estimated_cost_rmb_if_off_peak"]
+
+
+def test_unknown_model_pricing_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    path = Path(tmp_path) / "usage.jsonl"
+    path.write_text(json.dumps({
+        "model": "custom-expensive-model",
+        "segment_ids": ["s1"],
+        "status": "completed",
+        "usage": {
+            "prompt_tokens": 1000,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 1000,
+            "completion_tokens": 500,
+            "request_count": 1,
+        },
+    }) + "\n", encoding="utf-8")
+    report = cost_report(
+        {"provider": {"model": "custom-expensive-model"}},
+        path,
+        remaining_segments=9,
+        completed_segments=1,
+    )
+    assert report["pricing_supported"] is False
+    assert report["estimated_cost_rmb_so_far"] is None
+    assert "unknown_model_pricing" in report["warnings"]
+
+
+def test_failed_usage_cost_does_not_inflate_completed_denominator(tmp_path):
+    path = Path(tmp_path) / "usage.jsonl"
+    rows = [
+        {
+            "model": "deepseek-flash",
+            "segment_ids": ["failed"],
+            "status": "failed_validation",
+            "usage": {
+                "prompt_tokens": 1000,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 1000,
+                "completion_tokens": 1000,
+                "request_count": 3,
+            },
+        },
+        {
+            "model": "deepseek-flash",
+            "segment_ids": ["done"],
+            "status": "completed",
+            "usage": {
+                "prompt_tokens": 1000,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 1000,
+                "completion_tokens": 1000,
+                "request_count": 1,
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    report = cost_report(
+        {"provider": {"model": "deepseek-flash"}},
+        path,
+        remaining_segments=1,
+        completed_segments=1,
+    )
+    assert report["usage"]["completed_segment_ids"] == 1
+    assert report["usage"]["failed_segment_ids"] == 1
+    assert report["average_cost_rmb_per_completed_segment"] == report["estimated_cost_rmb_so_far"]
