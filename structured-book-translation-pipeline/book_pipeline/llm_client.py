@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, Iterable, Optional, Tuple, Type, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 try:  # pydantic is an optional runtime dependency for structured completion.
     from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -37,9 +38,10 @@ def aggregate_usage(usages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     rows = [dict(usage or {}) for usage in usages]
     prompt_tokens = sum(int(row.get("prompt_tokens") or 0) for row in rows)
     completion_tokens = sum(int(row.get("completion_tokens") or 0) for row in rows)
-    total_tokens = sum(int(row.get("total_tokens") or 0) for row in rows)
-    if not total_tokens:
-        total_tokens = prompt_tokens + completion_tokens
+    total_tokens = sum(
+        int(row.get("total_tokens") or (int(row.get("prompt_tokens") or 0) + int(row.get("completion_tokens") or 0)))
+        for row in rows
+    )
     cache_hit = sum(int(row.get("prompt_cache_hit_tokens") or 0) for row in rows)
     cache_miss = 0
     reasoning_tokens = 0
@@ -111,9 +113,22 @@ class OpenAICompatibleClient:
         self.max_tokens = int(provider.get("max_tokens", 8192))
         self.temperature = float(provider.get("temperature", 0.2))
         self.retries = int(provider.get("retries", 5))
-        self.thinking_mode = str(os.environ.get(thinking_env) or provider.get("thinking_mode") or "disabled").strip().lower()
-        if self.thinking_mode not in {"disabled", "low", "high", "max"}:
+        hostname = (urlparse(self.api_url).hostname or "").lower()
+        self.is_deepseek = hostname == "api.deepseek.com" or hostname.endswith(".deepseek.com")
+        configured_thinking = os.environ.get(thinking_env)
+        if configured_thinking is None:
+            configured_thinking = provider.get("thinking_mode")
+        if configured_thinking is None and self.is_deepseek:
+            configured_thinking = "disabled"
+        self.thinking_mode = (
+            str(configured_thinking).strip().lower()
+            if configured_thinking is not None
+            else None
+        )
+        if self.thinking_mode is not None and self.thinking_mode not in {"disabled", "low", "high", "max"}:
             raise ValueError("provider.thinking_mode must be one of: disabled, low, high, max")
+        native_json_setting = provider.get("native_json_mode")
+        self.native_json_mode = self.is_deepseek if native_json_setting is None else bool(native_json_setting)
         # Monotonic wire-request counter: every actual HTTP POST attempt this
         # client instance makes (including complete_json re-requests). Lets the
         # resolver meter the true request budget (reviewer MAJOR finding: step
@@ -133,11 +148,12 @@ class OpenAICompatibleClient:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            "thinking": {"type": "disabled" if self.thinking_mode == "disabled" else "enabled"},
         }
-        if self.thinking_mode != "disabled":
-            payload["reasoning_effort"] = self.thinking_mode
-        if json_mode:
+        if self.thinking_mode is not None:
+            payload["thinking"] = {"type": "disabled" if self.thinking_mode == "disabled" else "enabled"}
+            if self.thinking_mode != "disabled":
+                payload["reasoning_effort"] = self.thinking_mode
+        if json_mode and self.native_json_mode:
             payload["response_format"] = {"type": "json_object"}
         auth = f"{self.auth_scheme} {self.api_key}".strip() if self.auth_scheme else self.api_key
         headers = {"Content-Type": "application/json"}
@@ -151,11 +167,18 @@ class OpenAICompatibleClient:
                     data = json.loads(response.read().decode("utf-8"))
                 choice = data.get("choices", [{}])[0]
                 content = str(choice.get("message", {}).get("content") or "")
+                usage = dict(data.get("usage") or {})
+                # DeepSeek JSON mode can occasionally return empty content; a
+                # length-truncated JSON response is also unusable. Return an
+                # empty payload WITH usage so the structured caller can retry
+                # while still accounting for the billable completion.
+                if json_mode and (not content or choice.get("finish_reason") == "length"):
+                    return "", usage
                 if not content:
                     raise RuntimeError("Provider returned empty content")
                 if choice.get("finish_reason") == "length":
                     raise RuntimeError("Provider truncated the batch")
-                return content, dict(data.get("usage") or {})
+                return content, usage
             except HTTPError as exc:
                 if exc.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == self.retries:
                     detail = (
