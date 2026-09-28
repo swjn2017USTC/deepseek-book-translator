@@ -70,6 +70,15 @@ def infer_internal_styles(blocks: List[Block]) -> Dict[str, StyleDecision]:
             level = 3
             confidence = 0.97
             evidence.append("labelled_numbering_grammar")
+        elif block.label in {"vision_heading", "vision_heading_unmatched"} and block.source_level:
+            level = min(6, max(2, int(block.source_level)))
+            confidence = 0.95 if block.label == "vision_heading" else 0.84
+            evidence.append("deepseek_vision_level_hint")
+            evidence.append(
+                "vision_text_grounded_to_ocr"
+                if block.label == "vision_heading"
+                else "vision_without_ocr_text_match"
+            )
         if hashes_disagree:
             evidence.append("ocr_levels_disagree_within_style")
         semantic_local_apparatus = canonical_heading_text(block.clean_content).casefold()
