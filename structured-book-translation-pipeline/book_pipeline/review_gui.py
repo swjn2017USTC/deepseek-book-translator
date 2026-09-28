@@ -112,7 +112,14 @@ def decision_from_fields(kind: str, candidate_id: str, fields: dict[str, str]) -
 
 
 class ReviewWindow:
-    def __init__(self, parent: Any, project: Path, kind: str, run_action: Callable[[str, Callable[[], Any]], None]):
+    def __init__(
+        self,
+        parent: Any,
+        project: Path,
+        kind: str,
+        run_action: Callable[[str, Callable[[], Any]], None],
+        post_compile_prepare: Callable[[], Any] | None = None,
+    ):
         import tkinter as tk
         from tkinter import ttk
 
@@ -121,6 +128,7 @@ class ReviewWindow:
         self.project = project
         self.kind = kind
         self.run_action = run_action
+        self.post_compile_prepare = post_compile_prepare
         self.candidates, self.rows, self.decisions_path = load_review(project, kind)
         self.active = -1
         self.window = tk.Toplevel(parent)
@@ -251,6 +259,11 @@ class ReviewWindow:
                 compiled = compile_reviews(self.project, self.decisions_path)
             else:
                 compiled = compile_project_glossary(self.project, self.decisions_path)
-            return {"compiled": compiled, "prepared": prepare_project(self.project)}
+            prepared = (
+                self.post_compile_prepare()
+                if self.post_compile_prepare is not None
+                else prepare_project(self.project)
+            )
+            return {"compiled": compiled, "prepared": prepared}
 
         self.run_action("编译审核并重新准备", action)
