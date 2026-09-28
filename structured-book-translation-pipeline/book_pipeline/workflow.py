@@ -594,7 +594,8 @@ def project_status(project_path: Path) -> Dict[str, Any]:
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
     review_path = structure_dir / "review_packets.jsonl"
-    validation_ok = bool(validation_path.exists() and json.loads(validation_path.read_text(encoding="utf-8")).get("ok"))
+    validation = json.loads(validation_path.read_text(encoding="utf-8")) if validation_path.exists() else {}
+    validation_ok = bool(validation.get("ok"))
     pending = _nonempty_lines(review_path)
     config = _translation_config(project)
     output_dir = resolve_path(config, "output_dir")
@@ -617,7 +618,11 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             glossary_reason = str(exc)
     translation = translation_status(config) if cleaned else None
-    if not validation_ok or pending:
+    if _is_epub_project(project) and validation.get("status") == "not_prepared":
+        status = "needs_prepare"
+    elif _is_epub_project(project) and not validation_ok:
+        status = "blocked_epub_compatibility"
+    elif not validation_ok or pending:
         status = "needs_structure_review"
     elif not cleaned or not fresh:
         status = "needs_prepare"
@@ -643,6 +648,8 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "status": status,
         "validation_ok": validation_ok,
         "pending_structure_reviews": pending,
+        "source_adapter": project.get("source_adapter"),
+        "compatibility_status": validation.get("compatibility_status"),
         "cleaning_fresh": fresh,
         "stale_reason": stale_reason,
         "glossary_ready": glossary_ready,
