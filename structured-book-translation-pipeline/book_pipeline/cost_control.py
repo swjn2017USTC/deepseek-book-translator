@@ -7,7 +7,7 @@ complete provider.pricing_rmb_per_million override before the code will emit a
 currency estimate; this fails closed instead of silently applying Flash prices.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -59,19 +59,13 @@ def pricing(config: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
 
 
 def is_peak_beijing(now: Optional[datetime] = None) -> bool:
-    """DeepSeek Flash weekday peak windows in Beijing time."""
+    """DeepSeek Flash weekday peak windows in fixed UTC+8 Beijing time."""
+    beijing = timezone(timedelta(hours=8))
     if now is None:
-        try:
-            from zoneinfo import ZoneInfo
-            now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        except Exception:
-            now = datetime.now()
+        now = datetime.now(beijing)
     elif now.tzinfo is not None:
-        try:
-            from zoneinfo import ZoneInfo
-            now = now.astimezone(ZoneInfo("Asia/Shanghai"))
-        except Exception:
-            pass
+        now = now.astimezone(beijing)
+    # Naive datetimes supplied by tests/callers are interpreted as Beijing.
     if now.weekday() >= 5:
         return False
     minutes = now.hour * 60 + now.minute
