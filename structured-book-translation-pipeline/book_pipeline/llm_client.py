@@ -87,6 +87,7 @@ class OpenAICompatibleClient:
         key_env = str(provider.get("api_key_env") or "DEEPSEEK_API_KEY")
         url_env = str(provider.get("api_url_env") or "DEEPSEEK_API_URL")
         model_env = str(provider.get("model_env") or "DEEPSEEK_MODEL")
+        thinking_env = str(provider.get("thinking_env") or "DEEPSEEK_THINKING_MODE")
         self.api_key = os.environ.get(key_env, "")
         self.api_url = os.environ.get(url_env) or str(provider.get("api_url") or "https://api.deepseek.com/chat/completions")
         self.model = os.environ.get(model_env) or str(provider.get("model") or "deepseek-flash")
@@ -110,7 +111,7 @@ class OpenAICompatibleClient:
         self.max_tokens = int(provider.get("max_tokens", 8192))
         self.temperature = float(provider.get("temperature", 0.2))
         self.retries = int(provider.get("retries", 5))
-        self.thinking_mode = str(provider.get("thinking_mode") or "disabled").strip().lower()
+        self.thinking_mode = str(os.environ.get(thinking_env) or provider.get("thinking_mode") or "disabled").strip().lower()
         if self.thinking_mode not in {"disabled", "low", "high", "max"}:
             raise ValueError("provider.thinking_mode must be one of: disabled, low, high, max")
         # Monotonic wire-request counter: every actual HTTP POST attempt this
