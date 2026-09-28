@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict
 from .review_gui import ReviewWindow
 
 from .workflow import (
+    auto_review_project_glossary,
     export_project,
     generate_project_cover,
     initialize_project,
@@ -30,6 +31,16 @@ def validate_book_id(value: str) -> str:
     if not value or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in value):
         raise ValueError("Book ID 只能包含小写字母、数字、连字符和下划线")
     return value
+
+
+def source_init_kwargs(value: str) -> Dict[str, Path]:
+    path = Path(value.strip()).expanduser().resolve()
+    suffix = path.suffix.casefold()
+    if suffix == ".json":
+        return {"input_json": path}
+    if suffix == ".epub":
+        return {"input_epub": path}
+    raise ValueError("输入文件必须是 PaddleOCR .json 或可重排 .epub")
 
 
 def self_test() -> Dict[str, Any]:
@@ -73,7 +84,7 @@ class TranslatorGUI:
 
         default_project = Path.home() / "Documents" / "DeepSeekBookTranslator" / "my-book"
         self.values: Dict[str, Any] = {
-            "ocr": tk.StringVar(),
+            "source": tk.StringVar(),
             "project": tk.StringVar(value=str(default_project)),
             "book_id": tk.StringVar(value="my-book"),
             "title": tk.StringVar(),
@@ -93,7 +104,7 @@ class TranslatorGUI:
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(1, weight=1)
 
-        self._path_row(outer, 0, "OCR JSON", "ocr", self._browse_ocr)
+        self._path_row(outer, 0, "输入文件 (JSON / EPUB)", "source", self._browse_source)
         self._path_row(outer, 1, "项目目录", "project", self._browse_project)
         self._entry_row(outer, 2, "Book ID", "book_id")
         self._entry_row(outer, 3, "原文书名", "title")
@@ -133,15 +144,15 @@ class TranslatorGUI:
         buttons.grid(row=12, column=0, columnspan=2, sticky="ew", pady=10)
         actions = (
             ("1 初始化项目", self.create_project),
-            ("2 准备/检查", lambda: self._run("准备项目", lambda: prepare_project(self._project()))),
+            ("2 准备/自动术语", self.prepare),
             ("3 章节审核", lambda: self.open_review("structure")),
-            ("4 术语审核", lambda: self.open_review("glossary")),
+            ("4 术语人工复核(可选)", lambda: self.open_review("glossary")),
             ("5 生成封面", lambda: self._run("生成封面", lambda: generate_project_cover(self._project(), self.values["theme"].get()))),
             ("6 零网络预检", self.preflight),
             ("7 翻译", self.translate),
             ("状态", lambda: self._run("读取状态", lambda: project_status(self._project()))),
-            ("渲染 Markdown", lambda: self._run("渲染", lambda: render_project(self._project()))),
-            ("导出 PDF+EPUB", lambda: self._run("导出", lambda: export_project(self._project(), "both"))),
+            ("渲染/生成成品", lambda: self._run("渲染", lambda: render_project(self._project()))),
+            ("导出成品", lambda: self._run("导出", lambda: export_project(self._project(), "both"))),
             ("打开项目目录", self.open_project),
         )
         for index, (label, action) in enumerate(actions):
@@ -159,13 +170,19 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(14, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("填写书籍信息后先初始化，再准备。遇到结构或术语门禁，请打开对应审核窗口逐项裁决。\n")
+        self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。准备阶段会在章节门禁通过后自动用 DeepSeek 审核术语；通常只需人工处理章节识别。\n")
 
     def open_review(self, kind: str) -> None:
         from tkinter import messagebox
 
         try:
-            ReviewWindow(self.root, self._project(), kind, self._run)
+            ReviewWindow(
+                self.root,
+                self._project(),
+                kind,
+                self._run,
+                post_compile_prepare=self._prepare_action,
+            )
         except (FileNotFoundError, ValueError, OSError) as exc:
             messagebox.showerror("无法打开审核", str(exc))
 
@@ -181,12 +198,20 @@ class TranslatorGUI:
         self.ttk.Entry(frame, textvariable=self.values[key]).grid(row=0, column=0, sticky="ew")
         self.ttk.Button(frame, text="浏览…", command=command).grid(row=0, column=1, padx=(6, 0))
 
-    def _browse_ocr(self) -> None:
+    def _browse_source(self) -> None:
         from tkinter import filedialog
 
-        value = filedialog.askopenfilename(title="选择 PaddleOCR JSON", filetypes=(("JSON", "*.json"), ("All files", "*.*")))
+        value = filedialog.askopenfilename(
+            title="选择 PaddleOCR JSON 或 EPUB",
+            filetypes=(
+                ("支持的书籍输入", "*.json *.epub"),
+                ("PaddleOCR JSON", "*.json"),
+                ("EPUB", "*.epub"),
+                ("All files", "*.*"),
+            ),
+        )
         if value:
-            self.values["ocr"].set(value)
+            self.values["source"].set(value)
 
     def _browse_project(self) -> None:
         from tkinter import filedialog
@@ -215,14 +240,14 @@ class TranslatorGUI:
 
     def create_project(self) -> None:
         def action():
-            ocr = Path(self.values["ocr"].get().strip()).expanduser().resolve()
+            source_args = source_init_kwargs(self.values["source"].get())
             book_id = validate_book_id(self.values["book_id"].get())
             title = self.values["title"].get().strip()
             title_zh = self.values["title_zh"].get().strip()
             if not title or not title_zh:
                 raise ValueError("请填写原文书名和中文书名")
             return initialize_project(
-                input_json=ocr,
+                **source_args,
                 book_id=book_id,
                 book_title=title,
                 book_title_zh=title_zh,
@@ -235,6 +260,23 @@ class TranslatorGUI:
             )
 
         self._run("初始化项目", action)
+
+    def _prepare_action(self) -> Dict[str, Any]:
+        first = prepare_project(self._project())
+        if first.get("status") != "needs_glossary_review":
+            return first
+        self._api_environment()
+        automatic = auto_review_project_glossary(self._project())
+        final = prepare_project(self._project())
+        return {
+            "status": final.get("status"),
+            "prepared_before_glossary": first,
+            "llm_glossary_review": automatic,
+            "prepared": final,
+        }
+
+    def prepare(self) -> None:
+        self._run("准备项目 / LLM 自动术语审核", self._prepare_action)
 
     def preflight(self) -> None:
         def action():
