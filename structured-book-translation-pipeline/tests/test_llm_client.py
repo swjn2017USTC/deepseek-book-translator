@@ -310,6 +310,27 @@ def test_complete_wire_attempts_count_retries(monkeypatch):
     assert client.wire_attempts == 3
 
 
+def test_multimodal_json_transport_preserves_content_blocks(monkeypatch):
+    client = _client(monkeypatch, thinking_mode="disabled", native_json_mode=True)
+    payloads = []
+
+    def fake_urlopen(request, timeout):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeHTTPResponse('{"pages": []}')
+
+    monkeypatch.setattr(llm_client, "urlopen", fake_urlopen)
+    content = [
+        {"type": "text", "text": "PAGE_JSON=0"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    text, _ = client.complete_multimodal_json_text("inspect page", content)
+
+    assert json.loads(text) == {"pages": []}
+    assert payloads[0]["messages"][1]["content"] == content
+    assert payloads[0]["response_format"] == {"type": "json_object"}
+    assert payloads[0]["thinking"] == {"type": "disabled"}
+
+
 def test_complete_disables_thinking_by_default_and_json_mode_is_explicit(monkeypatch):
     client = _client(monkeypatch, thinking_mode="disabled", native_json_mode=True)
     payloads = []
