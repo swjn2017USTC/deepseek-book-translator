@@ -147,7 +147,7 @@ class TranslatorGUI:
             ("2 准备/自动术语", self.prepare),
             ("3 章节审核", lambda: self.open_review("structure")),
             ("4 术语人工复核(可选)", lambda: self.open_review("glossary")),
-            ("5 生成封面", lambda: self._run("生成封面", lambda: generate_project_cover(self._project(), self.values["theme"].get()))),
+            ("5 生成封面", self.generate_cover),
             ("6 零网络预检", self.preflight),
             ("7 翻译", self.translate),
             ("状态", lambda: self._run("读取状态", lambda: project_status(self._project()))),
@@ -277,6 +277,20 @@ class TranslatorGUI:
 
     def prepare(self) -> None:
         self._run("准备项目 / LLM 自动术语审核", self._prepare_action)
+
+    def generate_cover(self) -> None:
+        def action():
+            manifest_path = self._project() / "project.json"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if manifest.get("source_adapter") == "epub_native_v1":
+                    return {
+                        "status": "skipped_native_epub",
+                        "reason": "Native EPUB preserves its embedded cover and opaque cover assets.",
+                    }
+            return generate_project_cover(self._project(), self.values["theme"].get())
+
+        self._run("生成封面", action)
 
     def preflight(self) -> None:
         def action():
