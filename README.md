@@ -1,6 +1,6 @@
 # DeepSeek Book Translator
 
-一个面向长篇书籍的可审计翻译工作台：既可从 PaddleOCR JSON 恢复章节树，也可直接读取并保留原包结构翻译 reflowable EPUB；经结构/兼容性与术语门禁后调用 DeepSeek 官方 API，支持断点续跑，并输出 Markdown、PDF 或原生回写后的 EPUB。
+一个面向长篇书籍的可审计翻译工作台：OCR/PDF 路径用确定性规则、PDF bookmark/font evidence 与 DeepSeek Vision 联合恢复章节树，native EPUB 则直接保留原包结构翻译；经结构/兼容性与术语门禁后调用 DeepSeek 官方 API，支持断点续跑，并输出 Markdown、PDF 或原生回写后的 EPUB。
 
 本仓库提供四种入口：
 
@@ -20,6 +20,7 @@
 ## 能力
 
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
+- 对 OCR/PDF 项目增加 DeepSeek Vision 结构增强：识别真正的目录页、抄录目录层级并用页码映射定位正文，同时扫描规则/PDF 字体 evidence 选出的正文嫌疑页，补出目录未列出的次级节；
 - 直接翻译 native EPUB：保留 OPF/spine/nav、DOM 层级、链接、脚注、表格、内嵌封面和非文本资源，只回写可翻译文本槽；
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
 - 生成书籍术语候选，并默认由 DeepSeek 自动执行 include/reject、统一译名和低置信度二次复核；全部决定与 usage 可审计并绑定到翻译缓存；
@@ -59,10 +60,18 @@ python3 new_book.py init \
   --book-title-zh '中文书名' \
   --author 'Author Name'
 python3 new_book.py prepare --project books/my-book
+
+# 设置 key 后，用 Vision 在人工章节审核前补强目录和隐藏小节。
+export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
+python3 new_book.py vision-structure --project books/my-book
 python3 new_book.py status --project books/my-book
 ```
 
-`prepare` 先运行章节恢复，再检查 `validation.json` 和 `review_packets.jsonl`。返回 `needs_structure_review` 时，按项目中的 `RUNBOOK.md` 人工完成结构裁决；章节门禁通过后若返回 `needs_glossary_review`，设置 key 并运行自动术语审核：
+`prepare` 保持纯离线：PaddleOCR label、页码映射、全局 TOC 对齐、编号和版式规则先给出 baseline。随后 `vision-structure` 才会联网并产生 API 费用。它优先读取与 OCR JSON 同名的 PDF，用 PyMuPDF 渲染页面；如果没有同名 PDF，则退回 OCR JSON 的 `inputImage`。也可以显式传入 `--pdf /path/to/source.pdf`。
+
+Vision 会批量扫描前言区识别真正的 TOC 页并抄录目录项；正文阶段默认不会盲扫全书，而是结合 PaddleOCR 的 `paragraph_title/doc_title/table of contents` 类别、短标题几何、编号、PyMuPDF 大字号行和 TOC 目标页，先筛出候选页再看图。若追求最大召回，可在 `chapter_config.json` 设 `vision.scan_all_body_pages=true`。输出 `structure/vision_structure.json` 绑定 OCR SHA-256，并记录模型、扫描页、TOC、正文标题与 usage。
+
+Vision 与 OCR 同页文本能匹配的标题可获得高置信证据；Vision 看见但 OCR 文本完全没有匹配的标题会保持低于自动通过阈值，仍交给人工章节审核。返回 `needs_structure_review` 时按 `RUNBOOK.md` 裁决；章节门禁通过后若返回 `needs_glossary_review`，继续自动术语审核：
 
 ```bash
 export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
@@ -158,7 +167,7 @@ native EPUB 输入现已同时通过 CLI、Coding Agent、Agent Skill 和 Window
 
 打开 [CODING_AGENT_PROMPT.md](CODING_AGENT_PROMPT.md)，把开头的 `<OCR_JSON_ABSOLUTE_PATH>` 替换成 OCR JSON 的绝对路径，然后把整段提示词交给能够访问本仓库和终端的 coding agent。
 
-Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、章节恢复、人工结构审核、LLM 自动术语审核、本地封面生成、零网络预检、分级翻译、QA、渲染与导出。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
+Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、离线章节恢复、DeepSeek Vision 结构增强、人工结构审核、LLM 自动术语审核、本地封面生成、零网络预检、分级翻译、QA、渲染与导出。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 
@@ -198,7 +207,7 @@ cp -R deepseek-book-translator/skills/deepseek-book-translation ~/.codex/skills/
 使用 $deepseek-book-translation，把 /绝对路径/book.json（或 book.epub）翻译成中文书籍项目。请从书中证据推断元数据，章节结构保持人工门禁，术语使用 DeepSeek 自动审核。
 ```
 
-Skill 会定位本仓库，读取工作流说明，依次完成初始化、章节恢复、人工结构审核、LLM 自动术语审核、零网络预检、分批翻译、QA、封面和出版物导出。它不会保存或提交 API key；结构证据不足时仍保持待审核，术语自动决定会写入独立审计与 usage 文件。通过 `gh skill` 安装的版本可使用下面的命令检查并更新：
+Skill 会定位本仓库，读取工作流说明；OCR/PDF 项目依次完成离线章节恢复、DeepSeek Vision 结构增强、人工结构审核，再进入 LLM 自动术语审核、零网络预检、分批翻译、QA、封面和出版物导出。它不会保存或提交 API key；结构证据不足时仍保持待审核，术语自动决定会写入独立审计与 usage 文件。通过 `gh skill` 安装的版本可使用下面的命令检查并更新：
 
 ```bash
 gh skill update deepseek-book-translation
@@ -213,7 +222,7 @@ Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 - OCR JSON / reflowable EPUB 文件选择；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
 - DeepSeek 模型、思考模式（默认 disabled）及隐藏显示的 API key 输入；
-- 初始化、准备、人工章节审核、**DeepSeek 自动术语审核**、可选人工术语复核、自动封面、零网络预检、分批翻译、状态、渲染和导出按钮；
+- 初始化、**离线准备 + DeepSeek Vision 章节增强**、人工章节审核、DeepSeek 自动术语审核、可选人工术语复核、自动封面、零网络预检、分批翻译、状态、渲染和导出按钮；
 - 运行日志和项目目录快捷打开。
 
 ### 下载预编译 EXE
@@ -231,7 +240,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\windows\build_windows.ps1
 ```
 
-生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目、三页合成样例和 Pillow；PDF/EPUB 所需的 Pandoc、XeLaTeX、字体和 EPUBCheck 仍需另行安装。Windows PDF 默认使用 SimSun、Microsoft YaHei 和 Consolas 字体。
+生成文件位于 `dist\DeepSeekBookTranslator.exe`。EXE 自带 Python 运行时、两个项目、三页合成样例、Pillow 和 PyMuPDF，因此可直接从同名 PDF 渲染 Vision 页；PDF/EPUB 所需的 Pandoc、XeLaTeX、字体和 EPUBCheck 仍需另行安装。Windows PDF 默认使用 SimSun、Microsoft YaHei 和 Consolas 字体。
 
 也可以在有桌面环境的 Python 安装中直接启动 GUI：
 
@@ -253,7 +262,7 @@ python3 deepseek_book_translator_gui.py
 
 ## DeepSeek 配置与安全
 
-默认端点为 `https://api.deepseek.com/chat/completions`，默认模型为 `deepseek-flash`，鉴权为 `Authorization: Bearer <key>`。key 只从 `DEEPSEEK_API_KEY` 环境变量读取；配置加载器拒绝配置文件中的密钥值。模型也可以通过 `DEEPSEEK_MODEL` 或书籍项目的 `provider.model` 设置。翻译默认显式关闭 thinking；可在项目配置的 `provider.thinking_mode` 或环境变量 `DEEPSEEK_THINKING_MODE` 中改为 `low`、`high`、`max`。对于普通长篇翻译建议保持 `disabled`，只在确有推理需要时开启。模型名称和 API 参数以 [DeepSeek 官方文档](https://api-docs.deepseek.com/guides/thinking_mode) 为准。
+默认端点为 `https://api.deepseek.com/chat/completions`，正文翻译与 Vision 默认都使用 `deepseek-flash`，鉴权为 `Authorization: Bearer <key>`。Vision 模型可以通过 `DEEPSEEK_VISION_MODEL` 独立覆盖，默认显式关闭 thinking。key 只从 `DEEPSEEK_API_KEY` 环境变量读取；配置加载器拒绝配置文件中的密钥值。模型也可以通过 `DEEPSEEK_MODEL` 或书籍项目的 `provider.model` 设置。翻译默认显式关闭 thinking；可在项目配置的 `provider.thinking_mode` 或环境变量 `DEEPSEEK_THINKING_MODE` 中改为 `low`、`high`、`max`。对于普通长篇翻译建议保持 `disabled`，只在确有推理需要时开启。模型名称和 API 参数以 [DeepSeek 官方文档](https://api-docs.deepseek.com/guides/thinking_mode) 为准。
 
 GUI 输入的 key 只放在当前进程内存和环境中，不保存到书籍项目。不要提交 `.env`、OCR、译文、术语库、封面或导出文件；使用自定义目录时仍应在 push 前检查 `git status` 和 `git diff --cached`。
 
