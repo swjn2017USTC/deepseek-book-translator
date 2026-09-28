@@ -43,6 +43,7 @@ def _vision_settings(chapter_config: Dict[str, Any]) -> Dict[str, Any]:
     settings.setdefault("body_batch_size", 4)
     settings.setdefault("max_body_pages", 120)
     settings.setdefault("scan_all_body_pages", False)
+    settings.setdefault("allow_remote_input_images", False)
     settings.setdefault("render_dpi", 120)
     settings.setdefault("max_tokens", 4096)
     settings.setdefault("temperature", 0.0)
@@ -83,11 +84,13 @@ class PageImageProvider:
         pdf_path: Optional[Path],
         *,
         dpi: int,
+        allow_remote_urls: bool = False,
     ):
         self.raw_pages = raw_pages
         self.input_json = input_json
         self.pdf_path = pdf_path if pdf_path and pdf_path.is_file() else None
         self.dpi = max(72, min(200, int(dpi)))
+        self.allow_remote_urls = bool(allow_remote_urls)
         self._document: Any = None
         self.sources: Dict[int, str] = {}
 
@@ -138,6 +141,8 @@ class PageImageProvider:
             return value
         parsed = urlparse(value)
         if parsed.scheme in {"http", "https"}:
+            if not self.allow_remote_urls:
+                return None
             self.sources[page_index] = "ocr_remote_url"
             return value
         path = Path(value).expanduser()
@@ -457,6 +462,7 @@ def collect_structure_vision(
         input_json,
         pdf_path,
         dpi=int(settings.get("render_dpi", 120)),
+        allow_remote_urls=bool(settings.get("allow_remote_input_images", False)),
     ) as images:
         for batch in _batches(toc_candidates, int(settings.get("toc_batch_size", 4))):
             content, available = _blocks_for_pages(
