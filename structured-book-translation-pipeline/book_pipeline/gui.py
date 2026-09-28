@@ -82,7 +82,8 @@ class TranslatorGUI:
             "source_lang": tk.StringVar(value="英语"),
             "target_lang": tk.StringVar(value="简体中文"),
             "domain": tk.StringVar(value="学术人文社科"),
-            "model": tk.StringVar(value=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")),
+            "model": tk.StringVar(value=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")),
+            "thinking_mode": tk.StringVar(value=os.environ.get("DEEPSEEK_THINKING_MODE", "disabled")),
             "api_key": tk.StringVar(),
             "limit": tk.StringVar(value="10"),
             "theme": tk.StringVar(value="auto"),
@@ -115,6 +116,11 @@ class TranslatorGUI:
         options = ttk.Frame(outer)
         options.grid(row=11, column=1, sticky="ew", pady=(6, 4))
         ttk.Label(outer, text="运行参数").grid(row=11, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(options, text="思考模式").pack(side="left")
+        ttk.Combobox(
+            options, textvariable=self.values["thinking_mode"], width=10, state="readonly",
+            values=("disabled", "low", "high", "max"),
+        ).pack(side="left", padx=(6, 16))
         ttk.Label(options, text="累计翻译数").pack(side="left")
         ttk.Entry(options, textvariable=self.values["limit"], width=8).pack(side="left", padx=(6, 20))
         ttk.Label(options, text="封面主题").pack(side="left")
@@ -204,6 +210,8 @@ class TranslatorGUI:
         model = self.values["model"].get().strip()
         if model:
             os.environ["DEEPSEEK_MODEL"] = model
+        thinking_mode = self.values["thinking_mode"].get().strip() or "disabled"
+        os.environ["DEEPSEEK_THINKING_MODE"] = thinking_mode
 
     def create_project(self) -> None:
         def action():
@@ -223,6 +231,7 @@ class TranslatorGUI:
                 source_lang=self.values["source_lang"].get().strip() or "英语",
                 target_lang=self.values["target_lang"].get().strip() or "简体中文",
                 domain=self.values["domain"].get().strip() or "学术人文社科",
+                thinking_mode=self.values["thinking_mode"].get().strip() or "disabled",
             )
 
         self._run("初始化项目", action)
