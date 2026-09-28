@@ -270,12 +270,11 @@ def initialize_project(
    只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；加密、纯图片、固定版式、
    scripted/remote-resource 等兼容性风险会被 fail-closed 阻止。
 
-2. 若状态为 `needs_glossary_review`，审核 `glossary_candidates.jsonl`，
-   完成 `glossary_decisions.template.jsonl` 后另存为 `glossary_decisions.jsonl`：
+2. 若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 后默认让 LLM 自动完成术语判断与译名：
 
-   `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
+   `python3 {script} auto-glossary --project {project_path}`
 
-   然后重新执行 prepare。
+   该步骤会保存 `glossary_llm_review.jsonl` 审计记录并自动编译决定；人工术语审核仅作为异常兜底。然后重新执行 prepare。
 
 3. 设置 `DEEPSEEK_API_KEY` 后做零网络预检，再按累计目标翻译：
 
@@ -304,12 +303,11 @@ def initialize_project(
 
    然后重新执行 prepare。不得在裁决中创造标题文字。
 
-3. 若状态为 `needs_glossary_review`，人工审核或让 coding agent 审核 `glossary_candidates.jsonl`，完成
-   `glossary_decisions.template.jsonl` 的每一项后另存为 `glossary_decisions.jsonl`，再运行：
+3. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
 
-   `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
+   `python3 {script} auto-glossary --project {project_path}`
 
-   收录术语必须有译名和证据；排除项必须写原因。然后重新执行 prepare。
+   LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
 
 4. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
 
