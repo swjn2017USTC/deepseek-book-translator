@@ -91,9 +91,11 @@ def test_token_set_ratio_consistency():
     # disjoint tokens AND disjoint letters: both backends fall back to the
     # plain sequence ratio, which is 0 here
     assert token_set_ratio("qqqq", "zzzz") == pytest.approx(0.0)
-    # partial word overlap ("alpha"/"delta" share no tokens, but letter-level
-    # similarity survives in the fallback): both backends agree
-    assert token_set_ratio("alpha beta", "gamma delta") == pytest.approx(8 / 21, abs=1e-12)
+    # No tokens overlap, so token-set scoring falls back to the plain
+    # character-sequence ratio. Pin the semantic contract instead of a stale
+    # hand-computed constant (SequenceMatcher reports 0.571428... here).
+    expected = SequenceMatcher(None, "alpha beta", "gamma delta").ratio()
+    assert token_set_ratio("alpha beta", "gamma delta") == pytest.approx(expected, abs=1e-12)
     subset = token_set_ratio("einleitung der rechtsphilosophie", "einleitung")
     assert subset > 0.5  # intersection alone already scores 1.0 in the classic formula
     assert subset <= 1.0
