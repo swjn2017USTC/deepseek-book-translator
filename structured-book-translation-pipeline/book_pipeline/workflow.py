@@ -15,6 +15,10 @@ from .clean import clean_book, require_structure_gate
 from .config import load_config, resolve_path
 from .cover_generator import generate_typographic_cover
 from .io_utils import read_jsonl, write_json, write_jsonl
+from .models import Segment
+from .provenance import write_clean_manifest
+from .epub import inspect_epub, render_epub, segment_epub
+from .epub.tokens import strip_tokens
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
 from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
@@ -62,9 +66,25 @@ def _validate_ocr_path(path: Path) -> None:
                 return
 
 
+def _validate_epub_path(path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    # Native inspection validates ZIP/OCF/package safety without modifying the source.
+    inspect_epub(path)
+
+
+def _is_epub_project(project: Dict[str, Any]) -> bool:
+    return str(project.get("source_adapter") or "") == "epub_native_v1"
+
+
+def _is_epub_config(config: Dict[str, Any]) -> bool:
+    return str(config.get("source_adapter") or "") == "epub_native_v1" or bool(config.get("input_epub"))
+
+
 def initialize_project(
     *,
-    input_json: Path,
+    input_json: Optional[Path] = None,
+    input_epub: Optional[Path] = None,
     book_id: str,
     book_title: str,
     book_title_zh: str,
@@ -76,14 +96,22 @@ def initialize_project(
     toc_search_end: int = 30,
     thinking_mode: str = "disabled",
 ) -> Dict[str, Any]:
+    if (input_json is None) == (input_epub is None):
+        raise ValueError("Choose exactly one source: input_json or input_epub")
     if not BOOK_ID.fullmatch(book_id):
         raise ValueError("book_id may contain only lowercase letters, digits, hyphen, and underscore")
     if toc_search_end < 0:
         raise ValueError("toc_search_end must be non-negative")
     if thinking_mode not in {"disabled", "low", "high", "max"}:
         raise ValueError("thinking_mode must be one of: disabled, low, high, max")
-    input_path = input_json.expanduser().resolve()
-    _validate_ocr_path(input_path)
+
+    source_adapter = "epub_native_v1" if input_epub is not None else "ocr_json_v1"
+    input_path = (input_epub if input_epub is not None else input_json).expanduser().resolve()
+    if input_epub is not None:
+        _validate_epub_path(input_path)
+    else:
+        _validate_ocr_path(input_path)
+
     project_path = (project_dir or (ROOT / "books" / book_id)).expanduser().resolve()
     source_library_setting = os.environ.get("BOOK_SOURCE_LIBRARY_ROOT")
     source_library = Path(source_library_setting).expanduser().resolve() if source_library_setting else None
@@ -93,24 +121,48 @@ def initialize_project(
     if project_path.exists() and (not project_path.is_dir() or any(project_path.iterdir())):
         raise FileExistsError(f"Project directory is not empty: {project_path}")
     project_path.mkdir(parents=True, exist_ok=True)
+
     structure_dir = project_path / "structure"
     work_dir = project_path / "work"
     chapter_config_path = project_path / "chapter_config.json"
     translation_config_path = project_path / "translation_config.json"
     glossary_path = project_path / "glossary.json"
-    write_json(chapter_config_path, {
-        "book_id": book_id,
-        "book_title": book_title,
-        "input_json": str(input_path),
-        "output_dir": str(structure_dir),
-        "toc_search_pages": [0, int(toc_search_end)],
-        "toc_alignment_window": 3,
-        "review_threshold": 0.9,
-        "suppress_book_title_duplicates": True,
-    })
+
+    chapter_config_value: Optional[str] = None
+    if input_epub is None:
+        write_json(chapter_config_path, {
+            "book_id": book_id,
+            "book_title": book_title,
+            "input_json": str(input_path),
+            "output_dir": str(structure_dir),
+            "toc_search_pages": [0, int(toc_search_end)],
+            "toc_alignment_window": 3,
+            "review_threshold": 0.9,
+            "suppress_book_title_duplicates": True,
+        })
+        chapter_config_value = str(chapter_config_path)
+    else:
+        # Keep config loading valid before prepare while making it explicit that
+        # no OCR chapter recovery has run yet. prepare replaces these placeholders.
+        structure_dir.mkdir(parents=True, exist_ok=True)
+        write_json(structure_dir / "book_structure.json", {
+            "schema_version": 1,
+            "book_id": book_id,
+            "adapter": "epub_native_v1",
+            "nodes": [],
+        })
+        write_json(structure_dir / "validation.json", {
+            "schema_version": 1,
+            "ok": False,
+            "adapter": "epub_native_v1",
+            "status": "not_prepared",
+        })
+        write_jsonl(structure_dir / "review_packets.jsonl", [])
+
     write_json(glossary_path, [])
     write_json(project_path / "glossary_master.json", [])
-    write_json(translation_config_path, {
+
+    translation_config: Dict[str, Any] = {
         "schema_version": 1,
         "book_id": book_id,
         "book_title": book_title,
@@ -119,7 +171,7 @@ def initialize_project(
         "source_lang": source_lang,
         "target_lang": target_lang,
         "domain": domain,
-        "input_json": str(input_path),
+        "source_adapter": source_adapter,
         "structure_json": str(structure_dir / "book_structure.json"),
         "output_dir": str(work_dir),
         **({"source_library_root": str(source_library)} if source_library else {}),
@@ -149,8 +201,6 @@ def initialize_project(
             "next_segments": 1,
             "previous_translation_max_chars": 300,
             "skip_failed_segments": True,
-            # Public defaults stay serial because DeepSeek account limits vary.
-            # Users may raise this after a successful smoke ladder.
             "max_workers": 1,
             "max_parse_retries": 3,
         },
@@ -172,17 +222,22 @@ def initialize_project(
             "epubcheck": {"enabled": True, "require": True, "path": ""},
             "pdf": {"tocdepth": 3},
         },
-    })
+    }
+    translation_config["input_epub" if input_epub is not None else "input_json"] = str(input_path)
+    write_json(translation_config_path, translation_config)
+
     manifest = {
         "schema_version": 1,
         "book_id": book_id,
+        "source_adapter": source_adapter,
+        "source_path": str(input_path),
         "project_dir": str(project_path),
-        # A frozen one-file executable is unpacked into a temporary directory.
-        # Store no temporary package path so the project remains portable to a
-        # later EXE session or a source checkout, both of which know their own
-        # default chapter package location.
-        "chapter_root": None if getattr(sys, "frozen", False) else str(DEFAULT_CHAPTER_ROOT),
-        "chapter_config": str(chapter_config_path),
+        "chapter_root": (
+            None
+            if input_epub is not None or getattr(sys, "frozen", False)
+            else str(DEFAULT_CHAPTER_ROOT)
+        ),
+        "chapter_config": chapter_config_value,
         "translation_config": str(translation_config_path),
         "structure_dir": str(structure_dir),
         "work_dir": str(work_dir),
@@ -191,14 +246,46 @@ def initialize_project(
         "glossary": str(glossary_path),
     }
     write_json(manifest_path, manifest)
+
     for schema_name in ("cover_candidates.schema.json", "glossary_decision.schema.json"):
         schema = ROOT / "schemas" / schema_name
         if schema.is_file():
             (project_path / schema_name).write_text(schema.read_text(encoding="utf-8"), encoding="utf-8")
-    # Keep the runbook portable; commands are meant to be run from the
-    # structured-book-translation-pipeline directory in a source checkout.
+
     script = "new_book.py"
-    runbook = f"""# {book_title_zh}：新书翻译运行说明
+    if input_epub is not None:
+        runbook = f"""# {book_title_zh}：Native EPUB 翻译运行说明
+
+1. 检查 EPUB 包并生成原生分段、兼容性报告和上下文结构（不会调用模型）：
+
+   `python3 {script} prepare --project {project_path}`
+
+   只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；加密、纯图片、固定版式、
+   scripted/remote-resource 等兼容性风险会被 fail-closed 阻止。
+
+2. 若状态为 `needs_glossary_review`，审核 `glossary_candidates.jsonl`，
+   完成 `glossary_decisions.template.jsonl` 后另存为 `glossary_decisions.jsonl`：
+
+   `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
+
+   然后重新执行 prepare。
+
+3. 设置 `DEEPSEEK_API_KEY` 后做零网络预检，再按累计目标翻译：
+
+   `python3 {script} preflight --project {project_path}`
+   `python3 {script} translate --project {project_path} --target-completed 10`
+   `python3 {script} translate --project {project_path} --target-completed 100`
+   `python3 {script} translate --project {project_path} --all`
+
+4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
+
+   `python3 {script} render --project {project_path}`
+
+   正式结果写入 `{project_path / 'exports' / (book_id + '.zh-CN.epub')}`。
+   原 EPUB 始终只读；内嵌封面和非文本资源保持原文件。
+"""
+    else:
+        runbook = f"""# {book_title_zh}：新书翻译运行说明
 
 1. 只做章节恢复和清理（不会调用模型）：
 
@@ -235,15 +322,12 @@ def initialize_project(
 
    `python3 {script} generate-cover --project {project_path} --theme auto`
 
-   如果改用自备图片，核对来源与使用权后再用 `set-cover` 登记。
-
 8. 生成带目录的 PDF 和带封面的 EPUB：
 
    `python3 {script} export --project {project_path} --format both`
 """
     (project_path / "RUNBOOK.md").write_text(runbook, encoding="utf-8")
     return {**manifest, "status": "initialized", "next_command": f"python3 {script} prepare --project {project_path}"}
-
 
 def _run_chapter(project: Dict[str, Any], arguments: Sequence[str]) -> None:
     if getattr(sys, "frozen", False):
