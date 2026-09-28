@@ -24,6 +24,7 @@ from .glossary_llm import auto_review_glossary
 from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
+from .structure_vision import collect_structure_vision
 from .translate import OpenAICompatibleClient, _batches, _completed, _segments, is_translation_current, translate_book, translation_status
 
 
@@ -140,6 +141,22 @@ def initialize_project(
             "toc_alignment_window": 3,
             "review_threshold": 0.9,
             "suppress_book_title_duplicates": True,
+            "vision": {
+                "enabled": True,
+                "model": "deepseek-flash",
+                "toc_scan_pages": [0, int(toc_search_end)],
+                "toc_batch_size": 4,
+                "body_batch_size": 4,
+                "max_body_pages": 120,
+                "scan_all_body_pages": False,
+                "render_dpi": 120,
+                "structured_retries": 3,
+                "toc_page_min_confidence": 0.70,
+                "toc_entry_min_confidence": 0.72,
+                "heading_min_confidence": 0.72,
+                "unmatched_heading_min_confidence": 0.90,
+                "heading_text_match": 0.58,
+            },
         })
         chapter_config_value = str(chapter_config_path)
     else:
@@ -553,6 +570,51 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     return result
 
 
+def vision_enhance_project(
+    project_path: Path,
+    pdf_path: Optional[Path] = None,
+    client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Collect DeepSeek Vision evidence, bind it to chapter config, and re-prepare."""
+    project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        raise ValueError("Native EPUB projects already carry structural markup; vision chapter recovery is for OCR/PDF projects")
+    chapter_config_path = Path(project["chapter_config"]).expanduser().resolve()
+    chapter_config = json.loads(chapter_config_path.read_text(encoding="utf-8"))
+    translation_config = _translation_config(project)
+    settings = dict(chapter_config.get("vision") or {})
+    if settings and not bool(settings.get("enabled", True)):
+        raise RuntimeError("Structure vision is disabled in chapter_config.json")
+    evidence = collect_structure_vision(
+        chapter_config,
+        dict(translation_config.get("provider") or {}),
+        config_base=chapter_config_path.parent,
+        pdf_override=pdf_path,
+        client=client,
+    )
+    structure_dir = Path(project["structure_dir"]).expanduser().resolve()
+    structure_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = structure_dir / "vision_structure.json"
+    write_json(evidence_path, evidence)
+    chapter_config["vision_evidence"] = str(evidence_path)
+    if pdf_path is not None:
+        chapter_config["pdf_path"] = str(pdf_path.expanduser().resolve())
+    write_json(chapter_config_path, chapter_config)
+    prepared = prepare_project(project_path)
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "vision_structure_collected",
+        "model": evidence.get("model"),
+        "toc_pages": len([row for row in evidence.get("toc_pages", []) if row.get("is_toc")]),
+        "vision_headings": len(evidence.get("headings", [])),
+        "scanned_toc_pages": len((evidence.get("scan") or {}).get("toc_pages_scanned") or []),
+        "scanned_body_pages": len((evidence.get("scan") or {}).get("body_pages_scanned") or []),
+        "usage": evidence.get("usage"),
+        "evidence_path": str(evidence_path),
+        "prepared": prepared,
+    }
+
 def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     if _is_epub_project(project):
@@ -665,6 +727,20 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             glossary_reason = str(exc)
     translation = translation_status(config) if cleaned else None
+    vision_path = structure_dir / "vision_structure.json"
+    vision = None
+    if vision_path.is_file():
+        try:
+            value = json.loads(vision_path.read_text(encoding="utf-8"))
+            vision = {
+                "model": value.get("model"),
+                "toc_pages": len([row for row in value.get("toc_pages", []) if row.get("is_toc")]),
+                "headings": len(value.get("headings", [])),
+                "usage": value.get("usage"),
+                "path": str(vision_path),
+            }
+        except (OSError, ValueError, TypeError):
+            vision = {"path": str(vision_path), "error": "unreadable"}
     if _is_epub_project(project) and validation.get("status") == "not_prepared":
         status = "needs_prepare"
     elif _is_epub_project(project) and not validation_ok:
@@ -703,6 +779,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "glossary_reason": glossary_reason,
         "translation": translation,
         "cost": cost,
+        "vision_structure": vision,
     }
 
 
@@ -843,6 +920,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--project", type=Path, required=True)
         if name == "render":
             command.add_argument("--allow-partial", action="store_true")
+    vision = commands.add_parser(
+        "vision-structure",
+        help="use DeepSeek Vision to recover TOC pages and hidden body headings",
+    )
+    vision.add_argument("--project", type=Path, required=True)
+    vision.add_argument("--pdf", type=Path)
     compile_command = commands.add_parser("compile-reviews")
     compile_command.add_argument("--project", type=Path, required=True)
     compile_command.add_argument("--decisions", type=Path, required=True)
@@ -900,6 +983,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
     elif args.command == "prepare":
         result = prepare_project(args.project)
+    elif args.command == "vision-structure":
+        result = vision_enhance_project(args.project, args.pdf)
     elif args.command == "compile-reviews":
         result = compile_reviews(args.project, args.decisions)
     elif args.command == "glossary":
