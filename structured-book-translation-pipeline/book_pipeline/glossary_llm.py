@@ -348,6 +348,7 @@ def auto_review_glossary(
     write_jsonl(paths["audit"], audit)
 
     total_usage = aggregate_usage(usage_rows)
+    total_usage["request_count"] = sum(int(row.get("request_count") or 0) for row in usage_rows)
     included = sum(row["decision"] == "include" for row in decisions)
     rejected = len(decisions) - included
     low_final = sum(
