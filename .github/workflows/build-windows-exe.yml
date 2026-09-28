@@ -83,12 +83,9 @@ jobs:
             $ReleaseTag = $env:GITHUB_REF_NAME
           }
           elseif ($env:GITHUB_REF -eq "refs/heads/main") {
-            $Match = [regex]::Match(
-              $env:RELEASE_COMMIT_MESSAGE,
-              '(?im)^release:\s*(v\d+\.\d+\.\d+)\s*
-            )
-            if ($Match.Success) {
-              $ReleaseTag = $Match.Groups[1].Value
+            $FirstLine = (($env:RELEASE_COMMIT_MESSAGE -split "\r?\n")[0]).Trim()
+            if ($FirstLine -match '^release:\s*(v[0-9]+\.[0-9]+\.[0-9]+)') {
+              $ReleaseTag = $Matches[1]
             }
           }
 
