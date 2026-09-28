@@ -10,7 +10,7 @@ repo = Path(SPECPATH).resolve().parent
 translation = repo / "structured-book-translation-pipeline"
 chapter = repo / "chapter-structure-recovery-lab"
 
-hiddenimports = collect_submodules("book_pipeline") + collect_submodules("chapter_recovery")
+hiddenimports = (\n    collect_submodules("book_pipeline")\n    + collect_submodules("chapter_recovery")\n    + collect_submodules("fitz")\n    + collect_submodules("pymupdf")\n)
 datas = [
     (str(repo / "examples" / "sample_ocr.json"), "examples"),
     (str(translation / "schemas"), "schemas"),
