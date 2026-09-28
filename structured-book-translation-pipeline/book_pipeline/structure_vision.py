@@ -439,6 +439,8 @@ def collect_structure_vision(
     page_map = infer_page_map(pages)
 
     pdf_path = pdf_override.expanduser().resolve() if pdf_override is not None else None
+    if pdf_override is not None and (pdf_path is None or not pdf_path.is_file()):
+        raise FileNotFoundError(f"Vision PDF not found: {pdf_override}")
     if pdf_path is None and chapter_config.get("pdf_path"):
         pdf_path = _resolve(config_base, str(chapter_config["pdf_path"]))
     if pdf_path is None:
@@ -514,6 +516,11 @@ def collect_structure_vision(
         for source in images.sources.values():
             source_counts[source] = source_counts.get(source, 0) + 1
 
+    if not scanned_toc and not scanned_body:
+        raise RuntimeError(
+            "No usable page images for structure Vision. Provide a source PDF "
+            "or local/data-URL OCR inputImage values."
+        )
     total_usage = aggregate_usage(usage_rows)
     total_usage["request_count"] = sum(int(row.get("request_count") or 0) for row in usage_rows)
     input_sha = sha256(input_json.read_bytes()).hexdigest()
