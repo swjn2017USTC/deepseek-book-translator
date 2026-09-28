@@ -142,7 +142,21 @@ class OpenAICompatibleClient:
         """Return raw JSON text while enabling the provider's native JSON mode."""
         return self._complete(system, user, json_mode=True)
 
-    def _complete(self, system: str, user: str, *, json_mode: bool) -> Tuple[str, Dict[str, Any]]:
+    def complete_multimodal_json_text(
+        self,
+        system: str,
+        content: Any,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Return JSON text for an OpenAI-compatible multimodal content list.
+
+        DeepSeek Flash accepts standard text and image_url blocks. Reuse the
+        same auth, retry, usage, thinking and native-JSON transport as text.
+        """
+        if not isinstance(content, list) or not content:
+            raise ValueError("Multimodal content must be a non-empty block list")
+        return self._complete(system, content, json_mode=True)
+
+    def _complete(self, system: str, user: Any, *, json_mode: bool) -> Tuple[str, Dict[str, Any]]:
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
