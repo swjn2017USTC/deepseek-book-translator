@@ -18,6 +18,12 @@ python3 new_book.py init \
   --domain '<DOMAIN>' \
   --toc-search-end '<PAGE_LIMIT>'
 python3 new_book.py prepare --project '<PROJECT_DIR>'
+
+# OCR/PDF projects: add multimodal structure evidence before human review.
+python3 new_book.py vision-structure --project '<PROJECT_DIR>'
+# If the PDF is not beside the OCR JSON with the same stem:
+# python3 new_book.py vision-structure --project '<PROJECT_DIR>' --pdf '<SOURCE_PDF>'
+
 python3 new_book.py status --project '<PROJECT_DIR>'
 ```
 
@@ -40,6 +46,14 @@ proceeds only when the report is `COMPATIBLE_REFLOWABLE`. States such as
 `NEEDS_USER_REVIEW_FIXED_LAYOUT`, or `NEEDS_COMPATIBILITY_REVIEW` fail
 closed; do not route the same EPUB through OCR/Pandoc merely to clear a native
 compatibility gate. Image-only books should explicitly switch to the OCR path.
+
+## Structure vision gate
+
+For OCR/PDF projects, `prepare` remains the zero-model deterministic baseline. `vision-structure` is a separate billable network step that uses DeepSeek Vision before human structure review.
+
+The Vision collector prefers an explicit or same-stem PDF and renders selected pages with PyMuPDF; otherwise it uses local/data-URL OCR `inputImage` references when available. Remote http(s) image references are ignored unless `vision.allow_remote_input_images=true` is explicitly enabled. It scans the configured front-matter range for true TOC pages, extracts TOC entries/hierarchy, then scans a bounded shortlist of body pages selected from PaddleOCR heading labels, numbering, short-title geometry, PyMuPDF large-font evidence and TOC page targets. Set `chapter_config.json -> vision.scan_all_body_pages=true` only when maximal recall is worth the added image/API cost.
+
+The result is `structure/vision_structure.json`. It is source-hash bound and records model, scanned pages, TOC rows, body headings and token usage. The deterministic analyzer consumes that sidecar. Vision headings grounded to same-page OCR text may gain high confidence; headings with no OCR text match remain below the normal automatic-accept threshold and must stay reviewable.
 
 ## Structure gate
 

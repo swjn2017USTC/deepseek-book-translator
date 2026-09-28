@@ -272,6 +272,9 @@ def _write_report(
         f"- 验证通过：{'是' if validation.get('ok') else '否'}",
         f"- 全局对齐：{validation.get('metrics', {}).get('toc_alignment_matched', 0)} 个匹配，"
         f"{validation.get('metrics', {}).get('toc_alignment_unmatched', 0)} 个未匹配",
+        f"- Vision TOC 条目：{len([entry for entry in toc_entries if 'deepseek_vision_toc' in entry.provenance])}",
+        f"- Vision 标题节点：{len([node for node in active if str(node.source).startswith('vision_heading')])}",
+        f"- 其中无 OCR 文本匹配、必须人工复核：{len([node for node in active if node.source == 'vision_heading_unmatched'])}",
         "",
         "## 页码映射",
         "",

@@ -13,7 +13,7 @@ from .page_map import PageMap
 from .toc import title_without_number
 
 
-MACRO_LABELS = {"doc_title", "paragraph_title", "header"}
+MACRO_LABELS = {"doc_title", "paragraph_title", "header", "vision_heading", "vision_heading_unmatched"}
 TERMINAL_PUNCTUATION = (".", "?", "!", ";", "。", "？", "！", "；")
 STOPWORDS = {
     "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of",
@@ -108,6 +108,8 @@ def _label_quality(block: Block) -> float:
         "paragraph_title": 0.92,
         "text": 0.62,
         "header": 0.45,
+        "vision_heading": 0.97,
+        "vision_heading_unmatched": 0.70,
     }.get(block.label, 0.0)
 
 

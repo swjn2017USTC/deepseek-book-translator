@@ -6,14 +6,14 @@
 
 需要处理的书籍输入：`<BOOK_INPUT_ABSOLUTE_PATH>`（PaddleOCR JSON 或 reflowable EPUB）
 
-请使用当前仓库的 `chapter-structure-recovery-lab` 与 `structured-book-translation-pipeline`，把这本书从 OCR JSON 处理为结构化中文译稿。你负责执行完整工作流、检查产物和报告仍需人工决定的问题。不要修改 OCR 原文件，不要把 OCR、译文、封面、API key 或其他私有数据提交到 Git。
+请使用当前仓库的 `chapter-structure-recovery-lab` 与 `structured-book-translation-pipeline`，把这本 OCR JSON/PDF 或 reflowable EPUB 处理为结构化中文译稿。你负责执行完整工作流、检查产物和报告仍需人工决定的问题。不要修改 OCR 原文件，不要把 OCR、译文、封面、API key 或其他私有数据提交到 Git。
 
 ## 必须遵守的边界
 
 1. 先读仓库根目录 `README.md`、两个子项目的 `README.md`、本书生成后的 `RUNBOOK.md`，再运行命令。
 2. 只处理用户有权处理并发送给 DeepSeek API 的文本。
 3. API key 只能从进程环境变量 `DEEPSEEK_API_KEY` 读取。不要要求用户把 key 粘贴进对话，不要打印、记录或写入任何文件；如果变量未设置，停在零网络预检之前，给出设置命令。
-4. 不得为了过门禁而猜测章节、改写源标题或删除正文。结构证据不足时保留 `needs_human`，列出候选、上下文和建议，不擅自决定。
+4. OCR/PDF 项目先跑纯离线 `prepare`，再在人工章节审核前跑 `vision-structure`。Vision 是补强证据：可以识别 TOC 页、目录层级和遗漏小节，但不得为了过门禁而猜测章节、改写源标题或删除正文。Vision 无 OCR 文本匹配的标题必须继续保留给人审。
 5. 术语候选默认交给仓库的 `auto-glossary` 让 DeepSeek 自动完成 include/reject 与统一译名；不要让用户逐条审核普通术语。模型决定必须保留审计记录。只有 API/结构化输出持续失败或用户明确要求覆盖某个决定时，才退回人工术语复核。
 6. 翻译使用项目配置中的 contextual v2，并按累计目标 `10 → 100 → 500 → all` 逐级进行。每一级检查状态、失败记录、结构令牌、术语一致性和异常译文；不要绕过断点续跑或质量门禁。公开默认单 worker；只有确认 DeepSeek 账户限制并通过 smoke 后才提高并发。
 7. 封面默认用本仓库的本地排版生成器，不下载第三方美术素材。用户明确提供合法图片时，才用 `set-cover` 登记其权利与来源。
@@ -51,17 +51,29 @@ python3 new_book.py init \
 
 把命令输出的项目目录保存为 `<PROJECT_DIR>`。确认 `project.json`、`chapter_config.json`、`translation_config.json` 和空术语表存在。配置文件中只能出现 `DEEPSEEK_API_KEY` 这个环境变量名，不能出现 key 值。
 
-## 第三步：章节恢复与结构审核
+## 第三步：章节恢复、Vision 增强与结构审核
+
+先建立纯离线 baseline：
 
 ```bash
 python3 new_book.py prepare --project "<PROJECT_DIR>"
+```
+
+对 OCR/PDF 项目，确认 `DEEPSEEK_API_KEY` 已设置后，在人工审核前运行：
+
+```bash
+python3 new_book.py vision-structure --project "<PROJECT_DIR>"
+# 如果同名 PDF 不在 OCR JSON 旁边：
+# python3 new_book.py vision-structure --project "<PROJECT_DIR>" --pdf "<SOURCE_PDF>"
 python3 new_book.py status --project "<PROJECT_DIR>"
 ```
+
+检查 `structure/vision_structure.json`：确认 Vision 实际扫描了 TOC 页和正文候选页，并记录模型与 usage。默认正文扫描由 OCR 标题类别、编号、短标题版式、PyMuPDF 大字号行和 TOC 页码共同 shortlist，不要无理由开启整书逐页 Vision。只有当召回仍明显不足且用户接受额外成本时，才把 `chapter_config.json -> vision.scan_all_body_pages` 改为 true 后重跑。
 
 读取 `structure/validation.json`、`structure/review_packets.jsonl`、`structure/structure_report.md` 和 `structure/recovered_outline.md`。
 
 - 如果验证通过且审核包为空，继续。
-- 如果出现 `needs_structure_review`，逐项依据 OCR 原块、页码、相邻标题、目录证据和父链审核。
+- 如果出现 `needs_structure_review`，逐项依据 OCR 原块、PDF/页码、Vision sidecar、相邻标题、目录证据和父链审核。
 - 决定只能引用审核包中已有证据；不能创造源书不存在的标题文字。
 - 将完整决定写入项目目录的 `structure_decisions.jsonl`，再运行：
 
@@ -135,6 +147,6 @@ python3 new_book.py export --project "<PROJECT_DIR>" --format both
 
 ## 最终报告
 
-最终回复必须包含：项目目录、推断的书目信息及证据、结构门禁结果、人工决定数量、术语收录/排除/未决数量、翻译完成率、DeepSeek 模型和实际 usage 汇总、QA 结果、封面路径与哈希、生成的 Markdown/PDF/EPUB 路径，以及任何尚未解决的问题。区分已经执行的结果和仅供参考的建议。
+最终回复必须包含：项目目录、推断的书目信息及证据、Vision 模型/扫描页/TOC与正文标题数量/usage、结构门禁结果、人工决定数量、术语收录/排除/未决数量、翻译完成率、DeepSeek 模型和实际 usage 汇总、QA 结果、封面路径与哈希、生成的 Markdown/PDF/EPUB 路径，以及任何尚未解决的问题。区分已经执行的结果和仅供参考的建议。
 
 ---

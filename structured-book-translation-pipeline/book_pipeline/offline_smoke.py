@@ -16,7 +16,7 @@ from .render import render_book
 from .translate import translate_book
 from .workflow import (
     auto_review_project_glossary, export_project, generate_project_cover,
-    initialize_project, preflight_project, prepare_project,
+    initialize_project, preflight_project, prepare_project, vision_enhance_project,
 )
 
 
@@ -27,6 +27,32 @@ class SyntheticClient:
         payload = json.loads(user)
         rows = [{"id": row["id"], "translated_text": "译：" + row["text"]} for row in payload["segments"]]
         return json.dumps(rows, ensure_ascii=False), {"prompt_tokens": 0, "completion_tokens": 0}
+
+
+class SyntheticStructureVisionClient:
+    model = "demo-fake-structure-vision"
+
+    def complete_multimodal_json_text(self, _system: str, content: list[dict[str, Any]]):
+        page_ids = [
+            int(block["text"].split("\n", 1)[0].split("=", 1)[1])
+            for block in content
+            if block.get("type") == "text" and str(block.get("text") or "").startswith("PAGE_JSON=")
+        ]
+        instruction = str(content[0].get("text") or "")
+        if "table-of-contents" in instruction:
+            payload = {
+                "pages": [
+                    {"page_json": page, "is_toc": False, "confidence": 0.99, "entries": []}
+                    for page in page_ids
+                ]
+            }
+        else:
+            payload = {
+                "pages": [{"page_json": page, "headings": []} for page in page_ids]
+            }
+        return json.dumps(payload), {
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        }
 
 
 class SyntheticGlossaryClient:
@@ -67,11 +93,26 @@ def run_offline_smoke() -> dict[str, Any]:
     previous_key = os.environ.get("DEEPSEEK_API_KEY")
     try:
         with TemporaryDirectory(prefix="deepseek-book-smoke-") as temporary:
-            project = Path(temporary) / "sample-book"
-            initialize_project(input_json=sample, book_id="synthetic-sample",
+            temporary_path = Path(temporary)
+            source = temporary_path / "source.json"
+            source.write_text(sample.read_text(encoding="utf-8"), encoding="utf-8")
+            sample_pages = json.loads(source.read_text(encoding="utf-8"))
+            import fitz
+
+            pdf = fitz.open()
+            for page_index in range(len(sample_pages)):
+                page = pdf.new_page(width=612, height=792)
+                page.insert_text((72, 72), f"Synthetic page {page_index + 1}", fontsize=10)
+            pdf.save(temporary_path / "source.pdf")
+            pdf.close()
+
+            project = temporary_path / "sample-book"
+            initialize_project(input_json=source, book_id="synthetic-sample",
                                book_title="Synthetic Sample", book_title_zh="合成样例",
                                author="Demo", project_dir=project)
             prepared = prepare_project(project)
+            vision = vision_enhance_project(project, client=SyntheticStructureVisionClient())
+            prepared = vision["prepared"]
             if prepared["status"] != "needs_glossary_review":
                 raise AssertionError(f"Unexpected first gate: {prepared['status']}")
             candidates = list(read_jsonl(project / "glossary_candidates.jsonl"))
@@ -124,7 +165,11 @@ def run_offline_smoke() -> dict[str, Any]:
             else:
                 raise AssertionError("Synthetic translations reached the publish path")
             return {
-                "status": "ok", "sample_pages": len(json.loads(sample.read_text(encoding="utf-8"))),
+                "status": "ok", "sample_pages": len(sample_pages),
+                "vision_structure_collected": True,
+                "vision_pdf_rendered": bool(
+                    ((json.loads((project / "structure" / "vision_structure.json").read_text(encoding="utf-8")).get("scan") or {}).get("image_sources") or {}).get("pdf_render")
+                ),
                 "glossary_candidates_reviewed": len(candidates),
                 "glossary_review_mode": "llm_auto",
                 "review_status": compiled["status"],

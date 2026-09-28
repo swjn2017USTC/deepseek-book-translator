@@ -15,6 +15,7 @@ from .recover import recover_structure
 from .report import write_outputs
 from .toc import find_toc_pages, parse_toc_entries
 from .validate import validate_structure
+from .vision_evidence import inject_vision_headings, load_vision_evidence, merge_vision_toc
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -33,8 +34,31 @@ def run_analyze(config_path: Path, output_override: Optional[Path] = None) -> Di
     raw_pages = load_pages(input_path)
     pages = normalize_blocks(raw_pages)
     page_map = infer_page_map(pages)
+    vision = None
+    vision_stats: Dict[str, Any] = {}
+    if config.get("vision_evidence"):
+        vision_path = _resolve(base, config["vision_evidence"])
+        if vision_path.is_file():
+            vision = load_vision_evidence(vision_path, input_path=input_path)
     toc_pages = find_toc_pages(pages, config.get("toc_search_pages", [0, 30]))
+    if vision is not None:
+        vision_settings = dict(config.get("vision") or {})
+        minimum = float(config.get("vision_toc_page_min_confidence", vision_settings.get("toc_page_min_confidence", 0.70)))
+        toc_pages = sorted(set(toc_pages) | {
+            int(item["page_json"])
+            for item in (vision.get("toc_pages") or [])
+            if isinstance(item, dict)
+            and bool(item.get("is_toc"))
+            and float(item.get("confidence") or 0.0) >= minimum
+            and str(item.get("page_json", "")).isdigit()
+        })
     toc_entries = parse_toc_entries(pages, toc_pages)
+    if vision is not None:
+        toc_entries = merge_vision_toc(
+            toc_entries, vision,
+            min_confidence=float(config.get("vision_toc_entry_min_confidence", vision_settings.get("toc_entry_min_confidence", 0.72))),
+        )
+        vision_stats = inject_vision_headings(pages, vision, config)
     if config.get("confirmed_toc"):
         confirmed_path = _resolve(base, config["confirmed_toc"])
         toc_entries = merge_confirmed_toc(toc_entries, load_confirmed_toc(confirmed_path))
@@ -71,6 +95,8 @@ def run_analyze(config_path: Path, output_override: Optional[Path] = None) -> Di
         )
         + len([item for item in text_candidates if not item.get("suppressed")]),
         "validation_ok": validation["ok"],
+        "vision_evidence_used": vision is not None,
+        "vision_stats": vision_stats,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result

@@ -24,6 +24,7 @@ from .glossary_llm import auto_review_glossary
 from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
+from .structure_vision import collect_structure_vision
 from .translate import OpenAICompatibleClient, _batches, _completed, _segments, is_translation_current, translate_book, translation_status
 
 
@@ -140,6 +141,25 @@ def initialize_project(
             "toc_alignment_window": 3,
             "review_threshold": 0.9,
             "suppress_book_title_duplicates": True,
+            "vision": {
+                "enabled": True,
+                "model": "deepseek-flash",
+                "toc_scan_pages": [0, int(toc_search_end)],
+                "toc_batch_size": 4,
+                "body_batch_size": 4,
+                "max_body_pages": 120,
+                "scan_all_body_pages": False,
+                "allow_remote_input_images": False,
+                "render_dpi": 120,
+                "max_tokens": 4096,
+                "temperature": 0.0,
+                "structured_retries": 3,
+                "toc_page_min_confidence": 0.70,
+                "toc_entry_min_confidence": 0.72,
+                "heading_min_confidence": 0.72,
+                "unmatched_heading_min_confidence": 0.90,
+                "heading_text_match": 0.58,
+            },
         })
         chapter_config_value = str(chapter_config_path)
     else:
@@ -293,41 +313,50 @@ def initialize_project(
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
 
-1. 只做章节恢复和清理（不会调用模型）：
+1. 先做一次纯离线章节恢复和清理：
 
    `python3 {script} prepare --project {project_path}`
 
-2. 若状态为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
+2. 设置 `DEEPSEEK_API_KEY` 后运行 Vision 章节增强：
+
+   `python3 {script} vision-structure --project {project_path}`
+
+   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；没有同名 PDF 时退回 OCR JSON 的 `inputImage`。也可以显式指定：
+   `python3 {script} vision-structure --project {project_path} --pdf /path/to/source.pdf`
+
+   Vision 会识别目录页、抄录目录层级，并扫描 OCR/PDF 规则筛出的正文嫌疑页以补充目录未列出的次级节。结果保存在 `structure/vision_structure.json`，并绑定 OCR SHA-256。
+
+3. 若增强后仍为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
 
    `python3 {script} compile-reviews --project {project_path} --decisions {project_path / 'structure_decisions.jsonl'}`
 
-   然后重新执行 prepare。不得在裁决中创造标题文字。
+   然后重新执行 prepare。Vision 无 OCR 文本匹配的标题会保持低置信度等待人工复核，不得为了过门禁直接批准。
 
-3. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
+4. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
 
    `python3 {script} auto-glossary --project {project_path}`
 
    LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
 
-4. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
+5. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
 
    `python3 {script} preflight --project {project_path}`
 
-5. 建议先累计翻译 10 个片段，再逐步扩大：
+6. 建议先累计翻译 10 个片段，再逐步扩大：
 
    `python3 {script} translate --project {project_path} --target-completed 10`
 
    断点续跑时把累计目标改为 100、500 等。确认后整本运行使用显式 `--all`。
 
-6. 完成率达到 100% 后渲染：
+7. 完成率达到 100% 后渲染：
 
    `python3 {script} render --project {project_path}`
 
-7. 用本地排版生成器创建并登记封面：
+8. 用本地排版生成器创建并登记封面：
 
    `python3 {script} generate-cover --project {project_path} --theme auto`
 
-8. 生成带目录的 PDF 和带封面的 EPUB：
+9. 生成带目录的 PDF 和带封面的 EPUB：
 
    `python3 {script} export --project {project_path} --format both`
 """
@@ -553,6 +582,51 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     return result
 
 
+def vision_enhance_project(
+    project_path: Path,
+    pdf_path: Optional[Path] = None,
+    client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Collect DeepSeek Vision evidence, bind it to chapter config, and re-prepare."""
+    project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        raise ValueError("Native EPUB projects already carry structural markup; vision chapter recovery is for OCR/PDF projects")
+    chapter_config_path = Path(project["chapter_config"]).expanduser().resolve()
+    chapter_config = json.loads(chapter_config_path.read_text(encoding="utf-8"))
+    translation_config = _translation_config(project)
+    settings = dict(chapter_config.get("vision") or {})
+    if settings and not bool(settings.get("enabled", True)):
+        raise RuntimeError("Structure vision is disabled in chapter_config.json")
+    evidence = collect_structure_vision(
+        chapter_config,
+        dict(translation_config.get("provider") or {}),
+        config_base=chapter_config_path.parent,
+        pdf_override=pdf_path,
+        client=client,
+    )
+    structure_dir = Path(project["structure_dir"]).expanduser().resolve()
+    structure_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = structure_dir / "vision_structure.json"
+    write_json(evidence_path, evidence)
+    chapter_config["vision_evidence"] = str(evidence_path)
+    if pdf_path is not None:
+        chapter_config["pdf_path"] = str(pdf_path.expanduser().resolve())
+    write_json(chapter_config_path, chapter_config)
+    prepared = prepare_project(project_path)
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "vision_structure_collected",
+        "model": evidence.get("model"),
+        "toc_pages": len([row for row in evidence.get("toc_pages", []) if row.get("is_toc")]),
+        "vision_headings": len(evidence.get("headings", [])),
+        "scanned_toc_pages": len((evidence.get("scan") or {}).get("toc_pages_scanned") or []),
+        "scanned_body_pages": len((evidence.get("scan") or {}).get("body_pages_scanned") or []),
+        "usage": evidence.get("usage"),
+        "evidence_path": str(evidence_path),
+        "prepared": prepared,
+    }
+
 def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     if _is_epub_project(project):
@@ -665,6 +739,20 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             glossary_reason = str(exc)
     translation = translation_status(config) if cleaned else None
+    vision_path = structure_dir / "vision_structure.json"
+    vision = None
+    if vision_path.is_file():
+        try:
+            value = json.loads(vision_path.read_text(encoding="utf-8"))
+            vision = {
+                "model": value.get("model"),
+                "toc_pages": len([row for row in value.get("toc_pages", []) if row.get("is_toc")]),
+                "headings": len(value.get("headings", [])),
+                "usage": value.get("usage"),
+                "path": str(vision_path),
+            }
+        except (OSError, ValueError, TypeError):
+            vision = {"path": str(vision_path), "error": "unreadable"}
     if _is_epub_project(project) and validation.get("status") == "not_prepared":
         status = "needs_prepare"
     elif _is_epub_project(project) and not validation_ok:
@@ -703,6 +791,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "glossary_reason": glossary_reason,
         "translation": translation,
         "cost": cost,
+        "vision_structure": vision,
     }
 
 
@@ -843,6 +932,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--project", type=Path, required=True)
         if name == "render":
             command.add_argument("--allow-partial", action="store_true")
+    vision = commands.add_parser(
+        "vision-structure",
+        help="use DeepSeek Vision to recover TOC pages and hidden body headings",
+    )
+    vision.add_argument("--project", type=Path, required=True)
+    vision.add_argument("--pdf", type=Path)
     compile_command = commands.add_parser("compile-reviews")
     compile_command.add_argument("--project", type=Path, required=True)
     compile_command.add_argument("--decisions", type=Path, required=True)
@@ -900,6 +995,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
     elif args.command == "prepare":
         result = prepare_project(args.project)
+    elif args.command == "vision-structure":
+        result = vision_enhance_project(args.project, args.pdf)
     elif args.command == "compile-reviews":
         result = compile_reviews(args.project, args.decisions)
     elif args.command == "glossary":
