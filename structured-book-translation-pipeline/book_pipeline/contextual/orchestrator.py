@@ -282,6 +282,20 @@ def _translate_one(
             last_error = exc
             (output_dir / "last_invalid_response.txt").write_text(content, encoding="utf-8")
     if not translated_text:
+        failed_usage = aggregate_usage(usages)
+        with _APPEND_LOCK:
+            append_jsonl(prepared["usage_path"], [{
+                "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                "batch": batch_index,
+                "model": client.model,
+                "segment_ids": [segment.id],
+                "usage": failed_usage,
+                "parse_attempts": max_parse_retries,
+                "api_completion_requests": int(failed_usage.get("request_count") or max_parse_retries),
+                "prompt_version": PROMPTS_VERSION,
+                "context_mode": "contextual_v2",
+                "status": "failed_validation",
+            }])
         raise RuntimeError(f"Segment {segment.id} failed response validation") from last_error
     record = record_row(
         segment,
