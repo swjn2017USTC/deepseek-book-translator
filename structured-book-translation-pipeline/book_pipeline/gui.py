@@ -23,6 +23,7 @@ from .workflow import (
     project_status,
     render_project,
     translate_project,
+    vision_enhance_project,
 )
 
 
@@ -144,7 +145,7 @@ class TranslatorGUI:
         buttons.grid(row=12, column=0, columnspan=2, sticky="ew", pady=10)
         actions = (
             ("1 初始化项目", self.create_project),
-            ("2 准备/自动术语", self.prepare),
+            ("2 准备/Vision章节/自动术语", self.prepare),
             ("3 章节审核", lambda: self.open_review("structure")),
             ("4 术语人工复核(可选)", lambda: self.open_review("glossary")),
             ("5 生成封面", self.generate_cover),
@@ -170,7 +171,7 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(14, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。准备阶段会在章节门禁通过后自动用 DeepSeek 审核术语；通常只需人工处理章节识别。\n")
+        self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。OCR 项目首次准备会先做离线章节恢复，再自动用 DeepSeek Vision 识别目录和遗漏小节；仍有歧义才需要人工章节审核，章节通过后术语继续自动处理。\n")
 
     def open_review(self, kind: str) -> None:
         from tkinter import messagebox
@@ -262,21 +263,36 @@ class TranslatorGUI:
         self._run("初始化项目", action)
 
     def _prepare_action(self) -> Dict[str, Any]:
-        first = prepare_project(self._project())
+        project = self._project()
+        first = prepare_project(project)
+        manifest = json.loads((project / "project.json").read_text(encoding="utf-8"))
+        vision = None
+        if (
+            manifest.get("source_adapter") != "epub_native_v1"
+            and not (project / "structure" / "vision_structure.json").is_file()
+        ):
+            self._api_environment()
+            vision = vision_enhance_project(project)
+            first = vision["prepared"]
         if first.get("status") != "needs_glossary_review":
-            return first
+            return {
+                "status": first.get("status"),
+                "vision_structure": vision,
+                "prepared": first,
+            } if vision is not None else first
         self._api_environment()
-        automatic = auto_review_project_glossary(self._project())
-        final = prepare_project(self._project())
+        automatic = auto_review_project_glossary(project)
+        final = prepare_project(project)
         return {
             "status": final.get("status"),
+            "vision_structure": vision,
             "prepared_before_glossary": first,
             "llm_glossary_review": automatic,
             "prepared": final,
         }
 
     def prepare(self) -> None:
-        self._run("准备项目 / LLM 自动术语审核", self._prepare_action)
+        self._run("准备项目 / Vision 章节增强 / LLM 自动术语审核", self._prepare_action)
 
     def generate_cover(self) -> None:
         def action():
