@@ -39,7 +39,7 @@ def run_analyze(config_path: Path, output_override: Optional[Path] = None) -> Di
     if config.get("vision_evidence"):
         vision_path = _resolve(base, config["vision_evidence"])
         if vision_path.is_file():
-            vision = load_vision_evidence(vision_path)
+            vision = load_vision_evidence(vision_path, input_path=input_path)
     toc_pages = find_toc_pages(pages, config.get("toc_search_pages", [0, 30]))
     if vision is not None:
         vision_settings = dict(config.get("vision") or {})
