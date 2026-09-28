@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeepSeek Vision structure evidence",
+  "type": "object",
+  "required": ["schema_version", "generated_by", "model", "input_sha256", "toc_pages", "headings", "scan", "usage"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"const": 1},
+    "generated_by": {"const": "deepseek_vision_structure_v1"},
+    "model": {"type": "string"},
+    "input_json": {"type": "string"},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pdf_path": {"type": ["string", "null"]},
+    "pdf_sha256": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "toc_pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["page_json", "is_toc", "confidence", "entries"],
+        "properties": {
+          "page_json": {"type": "integer", "minimum": 0},
+          "is_toc": {"type": "boolean"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "entries": {"type": "array"}
+        }
+      }
+    },
+    "headings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["page_json", "title", "kind", "level", "confidence"],
+        "properties": {
+          "page_json": {"type": "integer", "minimum": 0},
+          "title": {"type": "string", "minLength": 1},
+          "kind": {"type": "string"},
+          "level": {"type": "integer", "minimum": 2, "maximum": 6},
+          "bbox": {
+            "anyOf": [
+              {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": {"type": "number", "minimum": 0, "maximum": 1}
+              },
+              {"type": "null"}
+            ]
+          },
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "scan": {"type": "object"},
+    "usage": {"type": "object"}
+  }
+}
