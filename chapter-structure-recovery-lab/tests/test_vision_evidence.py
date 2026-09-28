@@ -66,6 +66,7 @@ def test_vision_toc_fills_missing_page_and_adds_omitted_entry():
     assert hidden.print_page == 9
     assert hidden.kind == "section"
     assert hidden.provenance == "deepseek_vision_toc"
+    assert hidden.source_level == 2
 
 
 def test_vision_heading_grounding_preserves_ocr_text_and_marks_unmatched_for_review():
@@ -111,3 +112,23 @@ def test_vision_heading_grounding_preserves_ocr_text_and_marks_unmatched_for_rev
     assert grounded.source_level == 4
     assert synthetic.clean_content == "OCR Completely Missed This Heading"
     assert synthetic.source_level == 3
+
+
+def test_vision_evidence_rejects_stale_ocr_source(tmp_path):
+    import json
+    import pytest
+
+    from chapter_recovery.vision_evidence import load_vision_evidence
+
+    source = tmp_path / "book.json"
+    source.write_text("[]", encoding="utf-8")
+    sidecar = tmp_path / "vision.json"
+    sidecar.write_text(json.dumps({
+        "schema_version": 1,
+        "input_sha256": "0" * 64,
+        "toc_pages": [],
+        "headings": [],
+    }), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="stale"):
+        load_vision_evidence(sidecar, input_path=source)
