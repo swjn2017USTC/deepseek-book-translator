@@ -188,7 +188,11 @@ def cost_report(
     model = effective_model(config)
     provider = _provider(config)
     explicit_pricing = _complete_explicit_pricing(config)
-    pricing_supported = model in FLASH_MODEL_ALIASES or explicit_pricing
+    observed_models = set(totals["models"])
+    observed_models_supported = not observed_models or observed_models.issubset(FLASH_MODEL_ALIASES)
+    pricing_supported = explicit_pricing or (
+        model in FLASH_MODEL_ALIASES and observed_models_supported
+    )
     current_period = "peak" if is_peak_beijing() else "off_peak"
 
     warnings = []
@@ -206,7 +210,7 @@ def cost_report(
     )
 
     if not pricing_supported:
-        warnings.append("unknown_model_pricing")
+        warnings.append("unknown_or_mixed_model_pricing")
         return {
             "model": model,
             "pricing_supported": False,
