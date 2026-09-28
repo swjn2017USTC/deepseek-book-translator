@@ -20,6 +20,7 @@ from .provenance import write_clean_manifest
 from .epub import inspect_epub, render_epub, segment_epub
 from .epub.tokens import strip_tokens
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
+from .glossary_llm import auto_review_glossary
 from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
@@ -193,6 +194,12 @@ def initialize_project(
             "candidate_limit": 80,
             "require_approval": True,
             "bind_translation_cache": True,
+            "llm_review": {
+                "enabled": True,
+                "batch_size": 12,
+                "structured_retries": 3,
+                "adjudicate_below": 0.78,
+            },
         },
         "chunk": {"max_chars": 6000, "max_segments": 10, "max_glossary_terms": 40},
         "translation": {
@@ -263,12 +270,11 @@ def initialize_project(
    只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；加密、纯图片、固定版式、
    scripted/remote-resource 等兼容性风险会被 fail-closed 阻止。
 
-2. 若状态为 `needs_glossary_review`，审核 `glossary_candidates.jsonl`，
-   完成 `glossary_decisions.template.jsonl` 后另存为 `glossary_decisions.jsonl`：
+2. 若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 后默认让 LLM 自动完成术语判断与译名：
 
-   `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
+   `python3 {script} auto-glossary --project {project_path}`
 
-   然后重新执行 prepare。
+   该步骤会保存 `glossary_llm_review.jsonl` 审计记录并自动编译决定；人工术语审核仅作为异常兜底。然后重新执行 prepare。
 
 3. 设置 `DEEPSEEK_API_KEY` 后做零网络预检，再按累计目标翻译：
 
@@ -297,12 +303,11 @@ def initialize_project(
 
    然后重新执行 prepare。不得在裁决中创造标题文字。
 
-3. 若状态为 `needs_glossary_review`，人工审核或让 coding agent 审核 `glossary_candidates.jsonl`，完成
-   `glossary_decisions.template.jsonl` 的每一项后另存为 `glossary_decisions.jsonl`，再运行：
+3. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
 
-   `python3 {script} compile-glossary --project {project_path} --decisions {project_path / 'glossary_decisions.jsonl'}`
+   `python3 {script} auto-glossary --project {project_path}`
 
-   收录术语必须有译名和证据；排除项必须写原因。然后重新执行 prepare。
+   LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
 
 4. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
 
@@ -589,6 +594,48 @@ def compile_project_glossary(project_path: Path, decisions: Path) -> Dict[str, A
     return result
 
 
+def auto_review_project_glossary(
+    project_path: Path,
+    client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Resolve the glossary gate with the configured LLM, then compile it.
+
+    The deterministic candidate generator and existing compiler remain the
+    source of truth. The model only produces auditable include/reject decisions
+    and translations for generated candidates.
+    """
+    project = _project_manifest(project_path)
+    config = _translation_config(project)
+    require_structure_gate(config)
+    require_fresh_cleaning(config)
+    manifest = generate_glossary(config)
+    if manifest.get("approved"):
+        return {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": "already_approved",
+            "review": None,
+            "compiled": manifest,
+        }
+    settings = ((config.get("glossary_settings") or {}).get("llm_review") or {})
+    if settings and not bool(settings.get("enabled", True)):
+        raise RuntimeError("LLM glossary review is disabled in glossary_settings.llm_review")
+    review = auto_review_glossary(config, client=client)
+    decisions = Path(str(review["decisions_path"])).expanduser().resolve()
+    compiled = compile_glossary_decisions(config, decisions)
+    if not compiled.get("approved"):
+        raise RuntimeError(
+            f"LLM glossary review did not clear the gate: {compiled.get('unresolved_terms')} unresolved"
+        )
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "approved",
+        "review": review,
+        "compiled": compiled,
+    }
+
+
 def project_status(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     structure_dir = Path(project["structure_dir"])
@@ -805,6 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
     compile_glossary = commands.add_parser("compile-glossary", help="compile reviewed terminology decisions")
     compile_glossary.add_argument("--project", type=Path, required=True)
     compile_glossary.add_argument("--decisions", type=Path, required=True)
+    auto_glossary = commands.add_parser(
+        "auto-glossary",
+        help="use DeepSeek to decide and compile all terminology candidates",
+    )
+    auto_glossary.add_argument("--project", type=Path, required=True)
     translate = commands.add_parser("translate")
     translate.add_argument("--project", type=Path, required=True)
     choice = translate.add_mutually_exclusive_group(required=True)
@@ -854,6 +906,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         result = generate_project_glossary(args.project, args.force)
     elif args.command == "compile-glossary":
         result = compile_project_glossary(args.project, args.decisions)
+    elif args.command == "auto-glossary":
+        result = auto_review_project_glossary(args.project)
     elif args.command == "status":
         result = project_status(args.project)
     elif args.command == "preflight":

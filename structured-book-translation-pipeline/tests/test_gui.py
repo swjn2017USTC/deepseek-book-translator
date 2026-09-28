@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from book_pipeline.gui import self_test, validate_book_id
+from book_pipeline.gui import self_test, source_init_kwargs, validate_book_id
 from book_pipeline.workflow import initialize_project
 
 
@@ -15,6 +15,15 @@ def test_validate_book_id_accepts_portable_names(value):
 def test_validate_book_id_rejects_unsafe_names(value):
     with pytest.raises(ValueError):
         validate_book_id(value)
+
+
+def test_gui_source_selector_accepts_json_and_epub(tmp_path):
+    json_path = tmp_path / "book.json"
+    epub_path = tmp_path / "book.EPUB"
+    assert source_init_kwargs(str(json_path)) == {"input_json": json_path.resolve()}
+    assert source_init_kwargs(str(epub_path)) == {"input_epub": epub_path.resolve()}
+    with pytest.raises(ValueError, match="json.*epub"):
+        source_init_kwargs(str(tmp_path / "book.pdf"))
 
 
 def test_executable_self_test_imports_runtime_dependencies(monkeypatch):

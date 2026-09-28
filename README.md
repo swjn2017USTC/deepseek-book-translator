@@ -2,12 +2,12 @@
 
 一个面向长篇书籍的可审计翻译工作台：既可从 PaddleOCR JSON 恢复章节树，也可直接读取并保留原包结构翻译 reflowable EPUB；经结构/兼容性与术语门禁后调用 DeepSeek 官方 API，支持断点续跑，并输出 Markdown、PDF 或原生回写后的 EPUB。
 
-本仓库提供三种入口：
+本仓库提供四种入口：
 
 - **CLI**：适合希望逐步控制结构审核、术语和翻译批次的用户；
 - **Coding Agent**：把预制提示词交给 Codex、Claude Code 等能够读写文件和运行命令的 agent；
 - **Agent Skill**：安装仓库内的标准 Skill，让支持 Skill 的 agent 自动发现完整工作流；
-- **Windows EXE**：通过图形界面选择 OCR JSON、填写书名和参数并运行主要步骤。
+- **Windows EXE**：通过图形界面选择 OCR JSON 或 reflowable EPUB、填写书名和参数；章节识别保留人工审核，术语默认由 DeepSeek 自动审核并决定译名。
 
 仓库只包含程序、schema 和合成测试样例，没有真实书籍 OCR、译文、封面、运行记录、API key 或私人配置。书籍项目、译文和导出物默认在 Git 忽略范围内。
 
@@ -22,7 +22,7 @@
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
 - 直接翻译 native EPUB：保留 OPF/spine/nav、DOM 层级、链接、脚注、表格、内嵌封面和非文本资源，只回写可翻译文本槽；
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
-- 生成并审核书籍术语表，将术语版本绑定到翻译缓存；
+- 生成书籍术语候选，并默认由 DeepSeek 自动执行 include/reject、统一译名和低置信度二次复核；全部决定与 usage 可审计并绑定到翻译缓存；
 - 通过 `DEEPSEEK_API_KEY` 调用 DeepSeek 官方 Chat Completions API；
 - 按累计目标断点续跑，保留逐段译文、完整重试 token usage、缓存命中率、推理 token 与成本估算；
 - 校验脚注、HTML 注释、公式、URL、Markdown 表格等结构令牌；
@@ -62,7 +62,15 @@ python3 new_book.py prepare --project books/my-book
 python3 new_book.py status --project books/my-book
 ```
 
-`prepare` 先运行章节恢复，再检查 `validation.json` 和 `review_packets.jsonl`。返回 `needs_structure_review` 时，按项目中的 `RUNBOOK.md` 完成结构裁决；返回 `needs_glossary_review` 时，审核术语候选并编译决定。也可以启动 GUI，在“章节审核”“术语审核”窗口逐项查看证据、保存裁决、编译并重新准备。门禁通过后设置自己的 key：
+`prepare` 先运行章节恢复，再检查 `validation.json` 和 `review_packets.jsonl`。返回 `needs_structure_review` 时，按项目中的 `RUNBOOK.md` 人工完成结构裁决；章节门禁通过后若返回 `needs_glossary_review`，设置 key 并运行自动术语审核：
+
+```bash
+export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
+python3 new_book.py auto-glossary --project books/my-book
+python3 new_book.py prepare --project books/my-book
+```
+
+`auto-glossary` 会让 DeepSeek 覆盖全部候选，自动 include/reject 并决定统一译名；低置信度项自动做第二轮复核，并保存 `glossary_llm_review.jsonl` 与 `glossary_llm_usage.json`。人工术语窗口只作为异常或覆盖决定时的兜底。门禁通过后继续：
 
 ```bash
 export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
@@ -113,10 +121,12 @@ python3 new_book.py status --project books/my-epub-book
 
 EPUB 中的 inline 标签会被编译成内部保护令牌，例如 `[[EPUB:0:OPEN:em]]`。这些令牌不是正文，不要手工删除或修改；翻译器会逐次验证它们的身份、顺序、嵌套关系以及 URL、脚注、表格和 DOM slot 是否仍可无歧义回写。
 
-术语审核通过后，翻译方式与 OCR 项目一致：
+EPUB 也使用同一套自动术语门禁。`prepare` 返回 `needs_glossary_review` 时先自动审核，然后开始翻译：
 
 ```bash
 export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
+python3 new_book.py auto-glossary --project books/my-epub-book
+python3 new_book.py prepare --project books/my-epub-book
 python3 new_book.py preflight --project books/my-epub-book
 python3 new_book.py translate --project books/my-epub-book --target-completed 10
 python3 new_book.py status --project books/my-epub-book
@@ -142,13 +152,13 @@ books/my-epub-book/exports/my-epub-book.zh-CN.epub
 
 正式 EPUB 交付默认要求 EPUBCheck。可把 `EPUBCHECK_JAR` 指向 EPUBCheck jar，或让 `epubcheck` 位于 PATH。**native EPUB 翻译本身不需要 Pandoc 或 XeLaTeX**；这两项只用于 OCR/Markdown 路径的 PDF/EPUB 出版。
 
-目前 native EPUB 输入已通过 CLI、Coding Agent 和 Agent Skill 暴露；Windows EXE 的文件选择界面仍以 OCR JSON 为主，直接翻译 EPUB 时优先使用上述 CLI/Agent 工作流。
+native EPUB 输入现已同时通过 CLI、Coding Agent、Agent Skill 和 Windows EXE 暴露。Windows GUI 的同一个输入框可直接选择 `.json` 或 `.epub`；EPUB 会走 package/DOM-preserving 路径，不经过 OCR/Pandoc 重建。
 
 ## 方式二：Coding Agent
 
 打开 [CODING_AGENT_PROMPT.md](CODING_AGENT_PROMPT.md)，把开头的 `<OCR_JSON_ABSOLUTE_PATH>` 替换成 OCR JSON 的绝对路径，然后把整段提示词交给能够访问本仓库和终端的 coding agent。
 
-Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、章节恢复、结构审核、术语审核、本地封面生成、零网络预检、分级翻译、QA、Markdown 渲染与可选 PDF/EPUB 导出。证据不足的结构或术语必须留给用户，不允许为了跑通而猜测。
+Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、章节恢复、人工结构审核、LLM 自动术语审核、本地封面生成、零网络预检、分级翻译、QA、渲染与导出。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 
@@ -185,10 +195,10 @@ cp -R deepseek-book-translator/skills/deepseek-book-translation ~/.codex/skills/
 安装后重新启动 Codex 会话，设置让 Codex 进程可以继承的 `DEEPSEEK_API_KEY`，然后直接提出任务，例如：
 
 ```text
-使用 $deepseek-book-translation，把 /绝对路径/book.json 翻译成中文书籍项目。请从书中证据推断元数据，并保留所有结构与术语审核门禁。
+使用 $deepseek-book-translation，把 /绝对路径/book.json（或 book.epub）翻译成中文书籍项目。请从书中证据推断元数据，章节结构保持人工门禁，术语使用 DeepSeek 自动审核。
 ```
 
-Skill 会定位本仓库，读取工作流说明，依次完成初始化、章节恢复、结构与术语审核、零网络预检、分批翻译、QA、封面和出版物导出。它不会保存或提交 API key；证据不足的书籍信息、结构和术语会保持待审核状态。通过 `gh skill` 安装的版本可使用下面的命令检查并更新：
+Skill 会定位本仓库，读取工作流说明，依次完成初始化、章节恢复、人工结构审核、LLM 自动术语审核、零网络预检、分批翻译、QA、封面和出版物导出。它不会保存或提交 API key；结构证据不足时仍保持待审核，术语自动决定会写入独立审计与 usage 文件。通过 `gh skill` 安装的版本可使用下面的命令检查并更新：
 
 ```bash
 gh skill update deepseek-book-translation
@@ -200,10 +210,10 @@ Skill 的文件结构、配置边界和本地私有版的区别见 [Agent Skill 
 
 Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 
-- OCR JSON 文件选择；
+- OCR JSON / reflowable EPUB 文件选择；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
 - DeepSeek 模型、思考模式（默认 disabled）及隐藏显示的 API key 输入；
-- 初始化、准备、逐项章节/术语审核、自动封面、零网络预检、分批翻译、状态、Markdown 渲染和 PDF/EPUB 导出按钮；
+- 初始化、准备、人工章节审核、**DeepSeek 自动术语审核**、可选人工术语复核、自动封面、零网络预检、分批翻译、状态、渲染和导出按钮；
 - 运行日志和项目目录快捷打开。
 
 ### 下载预编译 EXE
@@ -256,7 +266,7 @@ python3 deepseek_book_translator_gui.py --self-test
 python3 deepseek_book_translator_gui.py --offline-smoke
 ```
 
-`--offline-smoke` 会在临时目录使用合成 OCR，经过初始化、章节恢复、术语门禁与裁决、封面、零网络预检、模拟翻译和 Markdown 渲染，并检查模拟译文无法进入正式导出。它不联网、不保存 key，也不验证真实 DeepSeek 翻译或 PDF/EPUB 工具。真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
+`--offline-smoke` 会在临时目录使用合成 OCR，经过初始化、章节恢复、**模拟 LLM 自动术语审核与编译**、封面、零网络预检、模拟翻译和 Markdown 渲染，并检查模拟译文无法进入正式导出。它不联网、不保存 key，也不验证真实 DeepSeek 翻译或 PDF/EPUB 工具。真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
 
 ## GitHub 发布
 
