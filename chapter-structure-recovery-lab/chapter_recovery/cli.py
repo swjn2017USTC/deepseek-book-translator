@@ -42,7 +42,8 @@ def run_analyze(config_path: Path, output_override: Optional[Path] = None) -> Di
             vision = load_vision_evidence(vision_path)
     toc_pages = find_toc_pages(pages, config.get("toc_search_pages", [0, 30]))
     if vision is not None:
-        minimum = float(config.get("vision_toc_page_min_confidence", 0.70))
+        vision_settings = dict(config.get("vision") or {})
+        minimum = float(config.get("vision_toc_page_min_confidence", vision_settings.get("toc_page_min_confidence", 0.70)))
         toc_pages = sorted(set(toc_pages) | {
             int(item["page_json"])
             for item in (vision.get("toc_pages") or [])
@@ -55,7 +56,7 @@ def run_analyze(config_path: Path, output_override: Optional[Path] = None) -> Di
     if vision is not None:
         toc_entries = merge_vision_toc(
             toc_entries, vision,
-            min_confidence=float(config.get("vision_toc_entry_min_confidence", 0.72)),
+            min_confidence=float(config.get("vision_toc_entry_min_confidence", vision_settings.get("toc_entry_min_confidence", 0.72))),
         )
         vision_stats = inject_vision_headings(pages, vision, config)
     if config.get("confirmed_toc"):
