@@ -25,7 +25,7 @@ from ..clean import require_structure_gate
 from ..config import resolve_path
 from ..glossary import glossary_cache_sha, require_ready_glossary
 from ..io_utils import append_jsonl, write_json, write_jsonl
-from ..llm_client import ChatClient, OpenAICompatibleClient
+from ..llm_client import ChatClient, OpenAICompatibleClient, aggregate_usage
 from ..models import Segment
 from ..provenance import require_fresh_cleaning
 from ..translate import SENTENCE_FINISH, _completed, _segments, translation_status
@@ -91,14 +91,18 @@ def _v2_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     previous_segments = int(translation.get("previous_segments", 2))
     next_segments = int(translation.get("next_segments", 2))
     previous_translation_max_chars = int(translation.get("previous_translation_max_chars", 500))
+    max_parse_retries = int(translation.get("max_parse_retries", 3))
     if previous_segments < 0 or next_segments < 0:
         raise ValueError("translation.previous_segments/next_segments must be non-negative")
     if previous_translation_max_chars < 0:
         raise ValueError("translation.previous_translation_max_chars must be non-negative")
+    if max_parse_retries < 1 or max_parse_retries > 10:
+        raise ValueError("translation.max_parse_retries must be between 1 and 10")
     return {
         "previous_segments": previous_segments,
         "next_segments": next_segments,
         "previous_translation_max_chars": previous_translation_max_chars,
+        "max_parse_retries": max_parse_retries,
         # P09 unattended-run fix: when true, a segment that fails all parse
         # attempts is recorded as an explicit status:'error' row and SKIPPED so
         # the rest of the book still translates; the next run retries it.
@@ -218,12 +222,7 @@ def _translate_one(
     *,
     batch_index: int,
 ) -> Dict[str, Any]:
-    """Translate one pending segment with full context; 10-attempt parse retry.
-
-    Returns ``{"record": ..., "usage": ..., "attempts": n}``.  Raises
-    RuntimeError when all 10 attempts fail (mirroring the v1 loop); every
-    failed attempt writes ``last_invalid_response.txt``.
-    """
+    """Translate one pending segment with bounded parse retry and full usage accounting."""
     config = prepared["config"]
     output_dir = prepared["output_dir"]
     client = prepared["client"]
@@ -266,8 +265,16 @@ def _translate_one(
     last_error: Optional[Exception] = None
     translated_text = ""
     usage: Dict[str, Any] = {}
-    for attempt in range(1, 11):
-        content, usage = client.complete(prompt, json.dumps(payload, ensure_ascii=False))
+    usages: List[Dict[str, Any]] = []
+    max_parse_retries = settings["max_parse_retries"]
+    for attempt in range(1, max_parse_retries + 1):
+        user_json = json.dumps(payload, ensure_ascii=False)
+        complete_json_text = getattr(client, "complete_json_text", None)
+        if callable(complete_json_text):
+            content, usage = complete_json_text(prompt, user_json)
+        else:
+            content, usage = client.complete(prompt, user_json)
+        usages.append(dict(usage or {}))
         try:
             translated_text = parse_target_only(content, segment)
             break
@@ -286,7 +293,7 @@ def _translate_one(
         prompt_version=PROMPTS_VERSION,
         deps=dependencies,
     )
-    return {"record": record, "usage": usage, "attempts": attempt, "batch_index": batch_index}
+    return {"record": record, "usage": aggregate_usage(usages), "attempts": attempt, "batch_index": batch_index}
 
 
 def _commit_target(
@@ -305,6 +312,8 @@ def _commit_target(
         "model": record["model"],
         "segment_ids": [segment.id],
         "usage": outcome["usage"],
+        "parse_attempts": outcome["attempts"],
+        "api_completion_requests": int((outcome["usage"] or {}).get("request_count") or outcome["attempts"]),
         "prompt_version": record["metadata"]["prompt_version"],
         "context_mode": record["metadata"]["context_mode"],
     }
@@ -334,6 +343,8 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
     deps_path = output_dir / "contextual_deps.jsonl"
     if deps_path.exists():
         artifact_names.append("contextual_deps.jsonl")
+    from ..cost_control import cost_report
+    cost = cost_report(config, prepared["usage_path"], len(required) - len(current))
     return {
         "schema_version": 1,
         "book_id": config["book_id"],
@@ -350,6 +361,7 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
         "artifacts": {name: str(output_dir / name) for name in artifact_names},
         "translation_file": str(prepared["progress_path"]),
         "usage_file": str(prepared["usage_path"]),
+        "cost": cost,
     }
 
 
