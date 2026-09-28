@@ -1325,6 +1325,7 @@ def recover_structure(
         config.get("text_candidate_profile"),
     )
     _repair_numbered_parents(nodes, book_node_id, chapters_under_parts)
+    _repair_vision_toc_parents(nodes, toc_entries, book_node_id)
     _repair_unnumbered_section_parents(nodes, book_node_id)
     _repair_section_symbol_parents(nodes, book_node_id)
     if config.get("hierarchy_profile") == "german_legal_commentary":
@@ -1417,6 +1418,44 @@ def _repair_numbered_parents(
             chapter = next((item for item in nodes if item.id == current_chapter), None)
             if chapter:
                 node.level = min(6, chapter.level + 1)
+
+
+def _repair_vision_toc_parents(
+    nodes: List[Node],
+    toc_entries: Sequence[TocEntry],
+    book_node_id: str,
+) -> None:
+    """Use Vision TOC indentation only for headings without stronger numbering.
+
+    TOC depth is useful for unnumbered chapter/section trees, but explicit
+    numbering grammar remains authoritative. The stack follows TOC order rather
+    than page order because TOC indentation is itself the evidence being used.
+    """
+    by_toc = {
+        node.toc_entry_id: node
+        for node in nodes
+        if node.toc_entry_id and not node.ignored
+    }
+    stack: Dict[int, Node] = {}
+    for entry in toc_entries:
+        node = by_toc.get(entry.id)
+        if node is None or entry.source_level is None:
+            continue
+        if "deepseek_vision_toc" not in entry.provenance:
+            continue
+        if numbering(entry.title) is not None:
+            continue
+        depth = min(5, max(1, int(entry.source_level)))
+        parent = next(
+            (stack[level] for level in range(depth - 1, 0, -1) if level in stack),
+            None,
+        )
+        node.parent_id = parent.id if parent is not None else book_node_id
+        node.level = min(6, (parent.level + 1) if parent is not None else 2)
+        node.evidence.append("deepseek_vision_toc_hierarchy")
+        stack[depth] = node
+        for level in [value for value in stack if value > depth]:
+            del stack[level]
 
 
 def _repair_sequential_arabic_roman_hierarchy(
