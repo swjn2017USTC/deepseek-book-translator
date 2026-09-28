@@ -62,7 +62,7 @@ jobs:
           Get-Content ./offline-smoke-report.json
           if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
           $Report = Get-Content ./offline-smoke-report.json | ConvertFrom-Json
-          if ($Report.status -ne 'ok' -or -not $Report.gui_review_constructed -or -not $Report.fake_export_blocked) { exit 1 }
+          if ($Report.status -ne 'ok' -or -not $Report.gui_review_constructed -or -not $Report.fake_export_blocked -or $Report.glossary_review_mode -ne 'llm_auto') { exit 1 }
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v7
