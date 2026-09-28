@@ -94,3 +94,12 @@ def test_joins_wrapped_german_part_title_without_joining_next_chapter():
         ("chapter", 13, "1. Vorbestimmung"),
         ("part", 115, "TEIL 5: GEISTIGE PRAXISFORMEN IM KOOPERATIVEN VOLLZUG"),
     ]
+
+
+def test_find_toc_pages_uses_paddle_layout_toc_label_even_without_contents_word():
+    pages = [[
+        block(0, 1, "table of contents", "Chapter One 3\nChapter Two 19"),
+    ]]
+    assert find_toc_pages(pages, [0, 2]) == [0]
+    entries = parse_toc_entries(pages, [0])
+    assert [entry.print_page for entry in entries] == [3, 19]
