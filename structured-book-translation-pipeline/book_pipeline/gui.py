@@ -47,12 +47,14 @@ def source_init_kwargs(value: str) -> Dict[str, Path]:
 def self_test() -> Dict[str, Any]:
     import PIL
     import chapter_recovery
+    import fitz
 
     result: Dict[str, Any] = {
         "status": "ok",
         "python": platform.python_version(),
         "pillow": PIL.__version__,
         "chapter_recovery": bool(chapter_recovery),
+        "pymupdf": str(getattr(fitz, "VersionBind", "available")),
         "gui_constructed": None,
     }
     if os.name == "nt":
