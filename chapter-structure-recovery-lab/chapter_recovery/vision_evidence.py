@@ -190,7 +190,7 @@ def inject_vision_headings(
     unmatched_minimum = float(config.get("vision_unmatched_heading_min_confidence", settings.get("unmatched_heading_min_confidence", 0.90)))
     match_floor = float(config.get("vision_heading_text_match", settings.get("heading_text_match", 0.58)))
     matched = 0
-    synthetic = 0
+    synthetic_count = 0
     skipped = 0
 
     for ordinal, item in enumerate(evidence.get("headings") or []):
@@ -240,7 +240,7 @@ def inject_vision_headings(
             normalized_bbox = (0.10, 0.15, 0.90, 0.22)
         x1, y1, x2, y2 = normalized_bbox
         bbox = (x1 * width, y1 * height, x2 * width, y2 * height)
-        synthetic = Block(
+        synthetic_block = Block(
                 page_index=page_index,
                 block_index=(max((block.block_index for block in page), default=-1) + 1),
                 raw_block_id="vision-" + stable_id(page_index, ordinal, title),
@@ -255,7 +255,7 @@ def inject_vision_headings(
             (index for index, block in enumerate(page) if block.bbox[1] > bbox[1]),
             len(page),
         )
-        page.insert(insertion, synthetic)
-        synthetic += 1
+        page.insert(insertion, synthetic_block)
+        synthetic_count += 1
 
-    return {"matched_ocr_blocks": matched, "synthetic_review_headings": synthetic, "skipped": skipped}
+    return {"matched_ocr_blocks": matched, "synthetic_review_headings": synthetic_count, "skipped": skipped}
