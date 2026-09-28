@@ -149,6 +149,7 @@ def initialize_project(
                 "body_batch_size": 4,
                 "max_body_pages": 120,
                 "scan_all_body_pages": False,
+                "allow_remote_input_images": False,
                 "render_dpi": 120,
                 "max_tokens": 4096,
                 "temperature": 0.0,
