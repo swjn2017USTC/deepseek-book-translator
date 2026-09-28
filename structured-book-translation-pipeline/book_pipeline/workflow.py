@@ -368,8 +368,147 @@ def _write_decision_template(review_path: Path, destination: Path) -> None:
     write_jsonl(destination, rows)
 
 
+def _build_epub_context_structure(book_id: str, segments: Sequence[Segment]) -> Dict[str, Any]:
+    """Build a lightweight heading tree for contextual windows/cache semantics.
+
+    The EPUB DOM/OPF remains the publication authority. This tree only gives
+    contextual_v2 stable chapter/section ancestry without flattening the book.
+    """
+    root_id = f"book-{book_id}"
+    nodes: list[Dict[str, Any]] = [{
+        "id": root_id,
+        "kind": "book",
+        "level": 0,
+        "title_source": "",
+        "parent_id": None,
+        "page_json": None,
+        "zone": "mainmatter",
+        "adapter": "epub_native_v1",
+    }]
+    stacks: Dict[str, list[tuple[int, str]]] = {}
+    for segment in segments:
+        metadata = segment.metadata or {}
+        href = str(metadata.get("href") or "")
+        if segment.kind == "attribute":
+            # Attribute slots are emitted after document text segmentation, so
+            # their original parent hint is not a reliable reading-order cue.
+            segment.parent_node_id = None
+            continue
+        if segment.kind != "heading":
+            continue
+        level = int(segment.level or 1)
+        stack = stacks.setdefault(href, [])
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        kind = "chapter" if not stack else "section"
+        parent_id = stack[-1][1] if stack else root_id
+        segment.parent_node_id = parent_id
+        segment.metadata["node_id"] = segment.id
+        segment.metadata["node_kind"] = kind
+        nodes.append({
+            "id": segment.id,
+            "kind": kind,
+            "level": level,
+            "title_source": strip_tokens(segment.source_text),
+            "parent_id": parent_id,
+            "page_json": None,
+            "zone": segment.zone,
+            "href": href,
+            "spine_index": metadata.get("spine_index"),
+            "adapter": "epub_native_v1",
+        })
+        stack.append((level, segment.id))
+    return {
+        "schema_version": 1,
+        "book_id": book_id,
+        "adapter": "epub_native_v1",
+        "nodes": nodes,
+    }
+
+
+def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
+    config = _translation_config(project)
+    source = resolve_path(config, "input_epub")
+    structure_dir = Path(project["structure_dir"])
+    structure_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = resolve_path(config, "output_dir")
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    reports = inspect_epub(source)
+    for name in ("epub_inventory", "source_link_graph", "compatibility_report"):
+        write_json(structure_dir / f"{name}.json", reports[name])
+    compatibility = reports["compatibility_report"]
+    review_path = structure_dir / "review_packets.jsonl"
+    write_jsonl(review_path, [])
+
+    if compatibility.get("status") != "COMPATIBLE_REFLOWABLE":
+        validation = {
+            "schema_version": 1,
+            "ok": False,
+            "adapter": "epub_native_v1",
+            "status": "blocked_epub_compatibility",
+            "compatibility_status": compatibility.get("status"),
+            "compatibility_report": str(structure_dir / "compatibility_report.json"),
+        }
+        write_json(structure_dir / "validation.json", validation)
+        result = {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": "blocked_epub_compatibility",
+            "validation_ok": False,
+            "compatibility": compatibility,
+            "translation_started": False,
+        }
+        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        return result
+
+    segmented = segment_epub(source, str(config["book_id"]))
+    segments = list(segmented["segments"])
+    structure = _build_epub_context_structure(str(config["book_id"]), segments)
+    structure_path = structure_dir / "book_structure.json"
+    validation_path = structure_dir / "validation.json"
+    write_json(structure_path, structure)
+    write_json(validation_path, {
+        "schema_version": 1,
+        "ok": True,
+        "adapter": "epub_native_v1",
+        "status": "compatible",
+        "compatibility_status": compatibility.get("status"),
+        "checks": ["ocf", "package", "navigation", "links", "resources"],
+    })
+
+    cleaning = dict(segmented["cleaning_report"])
+    cleaning["compatibility_status"] = compatibility.get("status")
+    segments_path = work_dir / "cleaned_segments.jsonl"
+    report_path = work_dir / "cleaning_report.json"
+    write_jsonl(segments_path, [segment.to_dict() for segment in segments])
+    write_json(report_path, cleaning)
+    write_json(work_dir / "source_manifest.json", segmented["source_manifest"])
+    write_clean_manifest(config, segments_path, report_path)
+
+    glossary = generate_glossary(config)
+    status = translation_status(config)
+    result = {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+        "validation_ok": True,
+        "pending_structure_reviews": 0,
+        "source_adapter": "epub_native_v1",
+        "compatibility": compatibility,
+        "cleaning_metrics": cleaning["metrics"],
+        "translation": status,
+        "glossary": glossary,
+        "translation_started": False,
+    }
+    write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+    return result
+
+
 def prepare_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        return _prepare_epub_project(project)
     _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
@@ -411,6 +550,8 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
 
 def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        raise ValueError("Native EPUB projects do not use OCR structure review decisions")
     review_path = Path(project["structure_dir"]) / "review_packets.jsonl"
     output = Path(project["project_dir"]) / "structure_overrides.json"
     chapter_config_path = Path(project["chapter_config"])
@@ -570,7 +711,14 @@ def translate_project(project_path: Path, target_completed: Optional[int], all_s
 
 def render_project(project_path: Path, allow_partial: bool = False) -> Dict[str, Any]:
     project = _project_manifest(project_path)
-    return render_book(_translation_config(project), allow_partial=allow_partial)
+    config = _translation_config(project)
+    if _is_epub_config(config):
+        return render_epub(
+            config,
+            allow_partial=allow_partial,
+            project_dir=Path(project["project_dir"]),
+        )
+    return render_book(config, allow_partial=allow_partial)
 
 
 def set_project_cover(
@@ -603,15 +751,29 @@ def generate_project_cover(project_path: Path, theme: str = "auto") -> Dict[str,
 
 def export_project(project_path: Path, output_format: str = "both") -> Dict[str, Any]:
     project = _project_manifest(project_path)
+    config = _translation_config(project)
+    if _is_epub_config(config):
+        if output_format == "pdf":
+            raise ValueError("Native EPUB projects preserve the source package and export EPUB only")
+        report = render_epub(config, allow_partial=False, project_dir=Path(project["project_dir"]))
+        return {
+            "schema_version": 1,
+            "book_id": config["book_id"],
+            "source_adapter": "epub_native_v1",
+            "outputs": {"epub": {"path": report["output"], "verification": report}},
+            "skipped_formats": ["pdf"] if output_format == "both" else [],
+        }
     formats = ("pdf", "epub") if output_format == "both" else (output_format,)
-    return export_book(_translation_config(project), Path(project["project_dir"]), formats)
+    return export_book(config, Path(project["project_dir"]), formats)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare and translate a new OCR JSON book safely")
+    parser = argparse.ArgumentParser(description="Prepare and translate an OCR JSON or native EPUB book safely")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="create a self-contained new-book project")
-    init.add_argument("--input-json", type=Path, required=True)
+    source = init.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-json", type=Path)
+    source.add_argument("--input-epub", type=Path)
     init.add_argument("--book-id", required=True)
     init.add_argument("--book-title", required=True)
     init.add_argument("--book-title-zh", required=True)
@@ -670,7 +832,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "init":
         result = initialize_project(
-            input_json=args.input_json, book_id=args.book_id,
+            input_json=args.input_json, input_epub=args.input_epub, book_id=args.book_id,
             book_title=args.book_title, book_title_zh=args.book_title_zh,
             project_dir=args.project_dir, source_lang=args.source_lang,
             target_lang=args.target_lang, domain=args.domain, author=args.author,
