@@ -33,6 +33,7 @@ def test_executable_self_test_imports_runtime_dependencies(monkeypatch):
     assert result["status"] == "ok"
     assert result["chapter_recovery"] is True
     assert result["pillow"]
+    assert result["pymupdf"]
 
 
 def test_frozen_project_manifest_does_not_store_temporary_package_path(tmp_path, monkeypatch):
