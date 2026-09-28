@@ -263,6 +263,10 @@ def _internal_confidence(block: Block) -> Tuple[float, List[str]]:
     parsed = numbering(block.clean_content)
     if block.label == "text" and parsed and parsed.family == "section_symbol":
         return 0.99, ["text", "explicit_section_symbol"]
+    if block.label == "vision_heading":
+        return 0.95, ["deepseek_vision_heading", "vision_text_grounded_to_ocr"]
+    if block.label == "vision_heading_unmatched":
+        return 0.82, ["deepseek_vision_heading", "vision_without_ocr_text_match", "needs_human_review"]
     evidence = [block.label]
     score = 0.86
     if height <= 0.07:
@@ -1168,7 +1172,7 @@ def recover_structure(
                 and zone_for_heading(block.clean_content) is not None
             )
             if (
-                block.label in {"paragraph_title", "doc_title"}
+                block.label in {"paragraph_title", "doc_title", "vision_heading", "vision_heading_unmatched"}
                 or explicit_section_text
                 or explicit_apparatus_boundary
             ) and block.id not in used_blocks:
