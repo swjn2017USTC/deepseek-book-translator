@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-exe:
@@ -73,8 +73,6 @@ jobs:
 
       - name: Attach executable to tagged release
         if: startsWith(github.ref, 'refs/tags/v')
-        permissions:
-          contents: write
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
