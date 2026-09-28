@@ -150,6 +150,8 @@ def initialize_project(
                 "max_body_pages": 120,
                 "scan_all_body_pages": False,
                 "render_dpi": 120,
+                "max_tokens": 4096,
+                "temperature": 0.0,
                 "structured_retries": 3,
                 "toc_page_min_confidence": 0.70,
                 "toc_entry_min_confidence": 0.72,
