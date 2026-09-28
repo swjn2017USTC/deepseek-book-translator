@@ -773,7 +773,9 @@ def test_apply_decisions_deterministic_on_sample_fixture(tmp_path):
     assert len(provenance["nodes"]) == len(tree["nodes"])
     origins = {record["decision_origin"] for record in provenance["nodes"]}
     assert origins == {"llm", "deterministic"}
-    assert result["output_dir"].endswith("structure/v2")
+    output_dir = Path(result["output_dir"])
+    assert output_dir.name == "v2"
+    assert output_dir.parent.name == "structure"
     audit = json.loads(after["hierarchy_audit.json"].decode("utf-8"))
     assert audit["heading_level_counts"] == validation["metrics"]["heading_level_counts"]
 
