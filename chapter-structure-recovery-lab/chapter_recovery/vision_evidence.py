@@ -40,6 +40,14 @@ def load_vision_evidence(
         actual = sha256(input_path.read_bytes()).hexdigest()
         if actual != str(value.get("input_sha256")):
             raise RuntimeError("Vision evidence is stale for the current OCR JSON")
+    pdf_value = value.get("pdf_path")
+    pdf_sha = value.get("pdf_sha256")
+    if pdf_value and pdf_sha:
+        pdf_path = Path(str(pdf_value)).expanduser()
+        if pdf_path.is_file():
+            actual_pdf = sha256(pdf_path.read_bytes()).hexdigest()
+            if actual_pdf != str(pdf_sha):
+                raise RuntimeError("Vision evidence is stale for the current PDF")
     return value
 
 
@@ -232,8 +240,7 @@ def inject_vision_headings(
             normalized_bbox = (0.10, 0.15, 0.90, 0.22)
         x1, y1, x2, y2 = normalized_bbox
         bbox = (x1 * width, y1 * height, x2 * width, y2 * height)
-        page.append(
-            Block(
+        synthetic = Block(
                 page_index=page_index,
                 block_index=(max((block.block_index for block in page), default=-1) + 1),
                 raw_block_id="vision-" + stable_id(page_index, ordinal, title),
@@ -244,14 +251,11 @@ def inject_vision_headings(
                 page_width=width,
                 page_height=height,
             )
+        insertion = next(
+            (index for index, block in enumerate(page) if block.bbox[1] > bbox[1]),
+            len(page),
         )
-        page.sort(
-            key=lambda block: (
-                block.order is None,
-                block.order if block.order is not None else block.bbox[1],
-                block.bbox[0],
-            )
-        )
+        page.insert(insertion, synthetic)
         synthetic += 1
 
     return {"matched_ocr_blocks": matched, "synthetic_review_headings": synthetic, "skipped": skipped}
