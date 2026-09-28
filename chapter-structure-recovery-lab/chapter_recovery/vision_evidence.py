@@ -89,6 +89,10 @@ def merge_vision_toc(
             page_label = _page_label(item)
             print_page = int(page_label) if page_label.isdigit() else None
             kind = _kind(item.get("kind"))
+            try:
+                source_level = min(5, max(1, int(item.get("level") or 1)))
+            except (TypeError, ValueError):
+                source_level = 1
 
             best: Optional[TocEntry] = None
             best_score = 0.0
@@ -104,6 +108,8 @@ def merge_vision_toc(
                 if best.print_page is None and print_page is not None:
                     best.print_page = print_page
                     best.page_label = page_label
+                if best.source_level is None:
+                    best.source_level = source_level
                 if "deepseek_vision_toc" not in best.provenance:
                     best.provenance = best.provenance + "+deepseek_vision_toc"
                     best.id = ""
@@ -122,6 +128,7 @@ def merge_vision_toc(
                     kind=kind,
                     source_page=page_json,
                     provenance="deepseek_vision_toc",
+                    source_level=source_level,
                 )
             )
     return result
