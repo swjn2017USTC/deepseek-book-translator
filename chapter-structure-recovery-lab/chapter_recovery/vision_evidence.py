@@ -8,6 +8,7 @@ vision result never becomes a second unaudited source of truth.
 """
 
 from dataclasses import replace
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -23,7 +24,11 @@ MATCHED_LABEL = "vision_heading"
 UNMATCHED_LABEL = "vision_heading_unmatched"
 
 
-def load_vision_evidence(path: Path) -> Dict[str, Any]:
+def load_vision_evidence(
+    path: Path,
+    *,
+    input_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or int(value.get("schema_version") or 0) != 1:
         raise ValueError("Unsupported vision evidence schema")
@@ -31,6 +36,10 @@ def load_vision_evidence(path: Path) -> Dict[str, Any]:
         raise ValueError("vision toc_pages must be a list")
     if not isinstance(value.get("headings", []), list):
         raise ValueError("vision headings must be a list")
+    if input_path is not None and value.get("input_sha256"):
+        actual = sha256(input_path.read_bytes()).hexdigest()
+        if actual != str(value.get("input_sha256")):
+            raise RuntimeError("Vision evidence is stale for the current OCR JSON")
     return value
 
 
