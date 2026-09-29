@@ -762,6 +762,59 @@ def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     return {"book_id": project["book_id"], "status": "reviews_compiled", "overrides": str(output), "next": "rerun prepare"}
 
 
+def choose_project_source_review(project_path: Path, mode: str) -> Dict[str, Any]:
+    project = _project_manifest(project_path)
+    config = _translation_config(project)
+    state = choose_source_review(
+        config,
+        Path(project["project_dir"]).expanduser().resolve(),
+        mode,
+    )
+    if mode == "manual":
+        result = {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": "needs_source_review",
+            "source_review": state,
+            "source_review_markdown": state.get("markdown"),
+            "next": "edit source_review.md, then run apply-source-review",
+        }
+    else:
+        prepared = prepare_project(project_path)
+        result = {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": prepared.get("status"),
+            "source_review": state,
+            "prepared": prepared,
+        }
+    write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+    return result
+
+
+def apply_project_source_review(
+    project_path: Path,
+    markdown_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    project = _project_manifest(project_path)
+    config = _translation_config(project)
+    state = apply_source_review(
+        config,
+        Path(project["project_dir"]).expanduser().resolve(),
+        markdown_path,
+    )
+    prepared = prepare_project(project_path)
+    result = {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": prepared.get("status"),
+        "source_review": state,
+        "prepared": prepared,
+    }
+    write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+    return result
+
+
 def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     config = _translation_config(project)
