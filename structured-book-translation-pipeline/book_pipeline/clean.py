@@ -233,10 +233,37 @@ def _specific_zone(node: Dict[str, Any], fallback: str) -> str:
 
 
 def _stitch_cross_page(segments: List[Segment], book_id: str) -> List[Segment]:
+    """Merge page-break fragments only after chapter/parent assignment is known.
+
+    The merge is intentionally conservative: both sides must be prose
+    paragraphs in the same zone and structural parent, on consecutive source
+    pages, and the preceding fragment must not already end a sentence. Stable
+    provenance keeps every contributing OCR block and records the page span for
+    source_review.md.
+    """
     output: List[Segment] = []
     for segment in segments:
-        if output and segment.kind == "paragraph" and output[-1].kind == "paragraph" and segment.parent_node_id == output[-1].parent_node_id and segment.page_json != output[-1].metadata.get("last_page") and not SENTENCE_END.search(output[-1].source_text):
-            previous = output[-1]
+        previous = output[-1] if output else None
+        previous_end = (
+            int((previous.metadata or {}).get("page_end", (previous.metadata or {}).get("last_page", previous.page_json)))
+            if previous is not None and (previous.metadata or {}).get("page_end", (previous.metadata or {}).get("last_page", previous.page_json)) is not None
+            else None
+        )
+        consecutive = (
+            previous_end is not None
+            and segment.page_json is not None
+            and int(segment.page_json) == previous_end + 1
+        )
+        should_merge = bool(
+            previous
+            and segment.kind == "paragraph"
+            and previous.kind == "paragraph"
+            and segment.parent_node_id == previous.parent_node_id
+            and segment.zone == previous.zone
+            and consecutive
+            and not SENTENCE_END.search(previous.source_text)
+        )
+        if should_merge:
             separator = ""
             if previous.source_text.endswith("-"):
                 previous.source_text = previous.source_text[:-1]
@@ -246,8 +273,16 @@ def _stitch_cross_page(segments: List[Segment], book_id: str) -> List[Segment]:
             previous.source_block_ids.extend(segment.source_block_ids)
             previous.source_hash = digest(previous.source_text)
             previous.id = f"seg-{digest(book_id, '|'.join(previous.source_block_ids), 'paragraph')[:20]}"
+            previous.metadata = dict(previous.metadata or {})
+            previous.metadata["page_start"] = previous.metadata.get("page_start", previous.page_json)
+            previous.metadata["page_end"] = segment.page_json
             previous.metadata["last_page"] = segment.page_json
             previous.metadata["cross_page_stitch"] = True
+            previous.metadata.setdefault("page_breaks", []).append(segment.page_json)
         else:
+            segment.metadata = dict(segment.metadata or {})
+            if segment.page_json is not None:
+                segment.metadata.setdefault("page_start", segment.page_json)
+                segment.metadata.setdefault("page_end", segment.metadata.get("last_page", segment.page_json))
             output.append(segment)
     return output

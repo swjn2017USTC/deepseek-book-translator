@@ -93,7 +93,8 @@ def test_native_epub_init_prepare_and_status(tmp_path):
     prepared = prepare_project(project)
     assert prepared["source_adapter"] == "epub_native_v1"
     assert prepared["compatibility"]["status"] == "COMPATIBLE_REFLOWABLE"
-    assert prepared["status"] in {"needs_glossary_review", "ready_to_translate"}
+    assert prepared["status"] == "needs_source_review_choice"
+    assert (project / "source_review.md").is_file()
 
     config = load_config(project / "translation_config.json")
     assert Path(config["input_epub"]).name == "source.epub"

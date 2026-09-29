@@ -25,7 +25,9 @@
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
 - 生成书籍术语候选，并默认由 DeepSeek 自动执行 include/reject、统一译名和低置信度二次复核；全部决定与 usage 可审计并绑定到翻译缓存；
 - 通过 `DEEPSEEK_API_KEY` 调用 DeepSeek 官方 Chat Completions API；
-- 按累计目标断点续跑，保留逐段译文、完整重试 token usage、缓存命中率、推理 token 与成本估算；
+- 章节稳定后生成带源页码的 `source_review.md`，可选择人工核对/修补标题层级和原文；批准版本成为 canonical translation source；
+- 普通同章连续文本默认使用最多 4 target / 6000 字符的 contextual micro-batch，共享上下文；高结构风险片段保持 singleton，失败时 partial salvage + recursive fallback；
+- 按累计目标断点续跑，保留逐段译文、完整重试 token usage、缓存命中率、推理 token、batch 计划与成本估算；
 - 校验脚注、HTML 注释、公式、URL、Markdown 表格等结构令牌；
 - 根据书名、原文书名和作者，在本地生成 1600×2400 排版封面，不使用第三方美术素材；
 - 渲染 Markdown，并在安装出版工具后导出带封面的 EPUB 与带目录/书签的 PDF。
@@ -41,6 +43,26 @@ v0.9 起，章节恢复采用“多证据、单一树构建器”的方式，而
 5. **人工结构门禁**：Vision 与 OCR 同页文本匹配时可以成为强证据；Vision 独自看到、OCR 完全没有文本匹配的标题只生成低置信度 review candidate。
 
 这种设计吸收了 Docling heading-hierarchy 常用的 bookmark → numbering → visual style 信号顺序，但没有把整个 Docling 依赖栈打进 Windows EXE，以免和现有 chapter recovery 重复。需要最大召回时可在 `chapter_config.json` 中把 `vision.scan_all_body_pages` 设为 `true`；默认上限是 120 个正文候选页。
+
+## Reviewed Source 与翻译效率
+
+v0.10 把“segment”与“API request”解耦。segment 仍是断点续跑、source hash、QA、EPUB DOM 回写和缓存失效的原子单位，但多个同章连续 segment 可以作为一个 wire micro-batch 请求。
+
+章节结构/Vision/人工结构门禁通过后，`prepare` 会先做保守跨页 paragraph 合并，再生成 `source_review.md`。文件包含可读的 Markdown 标题层级、`Source page(s)` 标记，以及不可删除/复制的隐藏 `BOOK_SEGMENT` 标记。此时流程必须选择：
+
+```bash
+# 人工核对：暂停后续自动流程
+python3 new_book.py source-review --project books/my-book --mode manual
+# 编辑 source_review.md 后：
+python3 new_book.py apply-source-review --project books/my-book
+
+# 或完全自动：
+python3 new_book.py source-review --project books/my-book --mode auto
+```
+
+人工导入会更新 canonical segment 文本/source hash 和标题层级，并写出 `work/reviewed_structure.json`；以后 micro-batch 使用的就是这个批准版本。批准后继续修改 Markdown 会自动使 gate 失效，必须再次应用，避免“看起来改过但模型实际没读”的情况。
+
+默认翻译参数为普通文本最多 4 targets / 6000 source chars，每个 batch 只带边界外 1 段 previous/next context；table、table cell、attribute、footnote、caption/reference 等高风险项默认 singleton。若一批只坏 1 项，有效 sibling 会立即保留，只对失败目标递归二分/降级重试。跨章节默认最多 4 workers；`requests_per_minute=0` 表示不做额外固定节拍，HTTP client 仍对 429/网络失败做有界退避。
 
 ## 方式一：CLI
 
@@ -83,15 +105,19 @@ python3 new_book.py status --project books/my-book
 
 Vision 会批量扫描前言区识别真正的 TOC 页并抄录目录项；正文阶段默认不会盲扫全书，而是结合 PaddleOCR 的 `paragraph_title/doc_title/table of contents` 类别、短标题几何、编号、PyMuPDF 大字号行和 TOC 目标页，先筛出候选页再看图。若追求最大召回，可在 `chapter_config.json` 设 `vision.scan_all_body_pages=true`。输出 `structure/vision_structure.json` 绑定 OCR SHA-256，并记录模型、扫描页、TOC、正文标题与 usage。
 
-Vision 与 OCR 同页文本能匹配的标题可获得高置信证据；Vision 看见但 OCR 文本完全没有匹配的标题会保持低于自动通过阈值，仍交给人工章节审核。返回 `needs_structure_review` 时按 `RUNBOOK.md` 裁决；章节门禁通过后若返回 `needs_glossary_review`，继续自动术语审核：
+Vision 与 OCR 同页文本能匹配的标题可获得高置信证据；Vision 看见但 OCR 文本完全没有匹配的标题会保持低于自动通过阈值，仍交给人工章节审核。章节门禁通过后再次 `prepare` 会生成 `source_review.md` 并返回 `needs_source_review_choice`。先选择人工核对或自动批准；只有批准后的 source 才会进入自动术语与翻译。
 
 ```bash
-export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
-python3 new_book.py auto-glossary --project books/my-book
-python3 new_book.py prepare --project books/my-book
+# 人工核对
+python3 new_book.py source-review --project books/my-book --mode manual
+# 编辑 source_review.md 后
+python3 new_book.py apply-source-review --project books/my-book
+
+# 或全自动
+python3 new_book.py source-review --project books/my-book --mode auto
 ```
 
-`auto-glossary` 会让 DeepSeek 覆盖全部候选，自动 include/reject 并决定统一译名；低置信度项自动做第二轮复核，并保存 `glossary_llm_review.jsonl` 与 `glossary_llm_usage.json`。人工术语窗口只作为异常或覆盖决定时的兜底。门禁通过后继续：
+批准 source 后术语默认自动完成。`auto-glossary` 会让 DeepSeek 覆盖全部候选，自动 include/reject 并决定统一译名；低置信度项自动做第二轮复核，并保存 `glossary_llm_review.jsonl` 与 `glossary_llm_usage.json`。人工术语窗口只作为异常或覆盖决定时的兜底。门禁通过后继续：
 
 ```bash
 export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
@@ -101,7 +127,7 @@ python3 new_book.py translate --project books/my-book --target-completed 10
 python3 new_book.py status --project books/my-book
 ```
 
-`preflight` 不联网，并会给出 contextual v2 的真实预计请求数（该模式下通常 1 个待翻译片段对应 1 次模型请求）。`translate` 才发送文本并可能产生费用；建议按 `10 → 100 → 500 → --all` 逐步扩大。10/100 段后优先检查 `cost.usage.reasoning_tokens`、`cache_hit_ratio`、`retry_rate` 与 `projected_total_cost_rmb_at_current_average`；若 reasoning token 非零或重试率异常，应先排查配置再继续整本。完成后运行：
+`preflight` 不联网，并按真实 micro-batch planner 给出预计请求数、平均/最大 batch size 与 singleton 数；预计请求通常显著少于待翻译 segment 数。`translate` 才发送文本并可能产生费用；建议按 `10 → 100 → 500 → --all` 逐步扩大。10/100 段后优先检查 `cost.usage.reasoning_tokens`、`cache_hit_ratio`、`retry_rate` 与 `projected_total_cost_rmb_at_current_average`；若 reasoning token 非零或重试率异常，应先排查配置再继续整本。完成后运行：
 
 ```bash
 python3 new_book.py render --project books/my-book
@@ -183,7 +209,7 @@ Agent 会先从书名页、版权页和目录推断书名、作者、语言、�
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 
-新项目默认使用 contextual v2：同章前后各 1 段上下文、最多 300 字上一段译文、失败段可续跑；默认 `thinking_mode=disabled`，翻译 JSON 使用 provider 原生 JSON mode，并将解析重试上限设为 3。公开默认保持单 worker，避免替用户假定 DeepSeek 账户速率额度。每次完成翻译后会在状态结果中附带 `cost` 诊断，汇总 cache hit/miss、reasoning tokens、retry rate 以及按当前均值估算的整本成本。
+新项目默认使用 contextual micro-batch：同章边界外前后各 1 段上下文、最多 300 字上一段译文、普通 batch 最多 4 targets/6000 字符、高风险项 singleton、失败段可续跑；默认 `thinking_mode=disabled`，JSON mode 开启，最多 4 个章节 lanes 并行，固定 RPM pacing 默认关闭。每次完成翻译后会在状态结果中附带 `cost` 诊断，汇总 cache hit/miss、reasoning tokens、retry rate 以及按当前均值估算的整本成本。
 
 ## 方式三：Agent Skill
 
@@ -234,7 +260,7 @@ Windows 图形程序名为 `DeepSeekBookTranslator.exe`。它提供：
 - OCR JSON / reflowable EPUB 文件选择，并为 OCR 项目提供可选的对应 PDF 选择框供 Vision 直接渲染；
 - 项目目录、Book ID、原文/中文书名、作者、语言和领域输入；
 - DeepSeek 模型、思考模式（默认 disabled）及隐藏显示的 API key 输入；
-- 初始化、**离线准备 + DeepSeek Vision 章节增强**、人工章节审核、DeepSeek 自动术语审核、可选人工术语复核、自动封面、零网络预检、分批翻译、状态、渲染和导出按钮；
+- 初始化、离线准备 + Vision、人工章节审核、**打开/应用带页码的原文MD**、自动术语、可选人工术语复核、零网络预检、micro-batch 翻译、状态、渲染和导出按钮；
 - 运行日志和项目目录快捷打开。
 
 ### 下载预编译 EXE
@@ -287,7 +313,7 @@ python3 deepseek_book_translator_gui.py --self-test
 python3 deepseek_book_translator_gui.py --offline-smoke
 ```
 
-`--offline-smoke` 会在临时目录使用合成 OCR，经过初始化、章节恢复、**模拟 LLM 自动术语审核与编译**、封面、零网络预检、模拟翻译和 Markdown 渲染，并检查模拟译文无法进入正式导出。它不联网、不保存 key，也不验证真实 DeepSeek 翻译或 PDF/EPUB 工具。真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
+`--offline-smoke` 会在临时目录使用合成 OCR，经过初始化、章节/Vision、**reviewed-source gate、模拟 LLM 自动术语审核、contextual micro-batch**、封面、零网络预检和 Markdown 渲染，并检查模拟译文无法进入正式导出。它不联网、不保存 key，也不验证真实 DeepSeek 翻译或 PDF/EPUB 工具。真实书籍回归和旧运行记录没有收入公开仓库，因此少量依赖私有语料的测试会跳过。在线 DeepSeek 翻译必须由用户使用自己的 key 和有权处理的样本验证。
 
 ## GitHub 发布
 

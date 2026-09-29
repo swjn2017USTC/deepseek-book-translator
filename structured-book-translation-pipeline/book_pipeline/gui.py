@@ -14,7 +14,9 @@ from typing import Any, Callable, Dict
 from .review_gui import ReviewWindow
 
 from .workflow import (
+    apply_project_source_review,
     auto_review_project_glossary,
+    choose_project_source_review,
     export_project,
     generate_project_cover,
     initialize_project,
@@ -84,6 +86,7 @@ class TranslatorGUI:
         self.root.minsize(820, 650)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.busy = False
+        self.pending_source_review_choice: Any = None
 
         default_project = Path.home() / "Documents" / "DeepSeekBookTranslator" / "my-book"
         self.values: Dict[str, Any] = {
@@ -149,12 +152,14 @@ class TranslatorGUI:
         buttons.grid(row=13, column=0, columnspan=2, sticky="ew", pady=10)
         actions = (
             ("1 初始化项目", self.create_project),
-            ("2 准备/Vision章节/自动术语", self.prepare),
+            ("2 准备/Vision/原文MD", self.prepare),
             ("3 章节审核", lambda: self.open_review("structure")),
-            ("4 术语人工复核(可选)", lambda: self.open_review("glossary")),
-            ("5 生成封面", self.generate_cover),
-            ("6 零网络预检", self.preflight),
-            ("7 翻译", self.translate),
+            ("4 打开原文MD", self.open_source_review),
+            ("5 应用原文MD", self.apply_source_review),
+            ("6 术语人工复核(可选)", lambda: self.open_review("glossary")),
+            ("7 生成封面", self.generate_cover),
+            ("8 零网络预检", self.preflight),
+            ("9 翻译", self.translate),
             ("状态", lambda: self._run("读取状态", lambda: project_status(self._project()))),
             ("渲染/生成成品", lambda: self._run("渲染", lambda: render_project(self._project()))),
             ("导出成品", lambda: self._run("导出", lambda: export_project(self._project(), "both"))),
@@ -175,7 +180,7 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(15, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。OCR 项目首次准备会先做离线章节恢复，再自动用 DeepSeek Vision 识别目录和遗漏小节；仍有歧义才需要人工章节审核，章节通过后术语继续自动处理。\n")
+        self._write("选择 OCR JSON 或 EPUB。结构/Vision 完成后会生成带页码的 source_review.md，并询问是否人工核对；人工修改会重新导入为 canonical source，之后再进行 micro-batch 翻译。\n")
 
     def open_review(self, kind: str) -> None:
         from tkinter import messagebox
@@ -308,7 +313,55 @@ class TranslatorGUI:
         }
 
     def prepare(self) -> None:
-        self._run("准备项目 / Vision 章节增强 / LLM 自动术语审核", self._prepare_action)
+        self._run("准备项目 / Vision 章节增强 / 原文MD门禁", self._prepare_action)
+
+    def _ask_source_review_choice(self) -> None:
+        from tkinter import messagebox
+
+        self.pending_source_review_choice = None
+        if messagebox.askyesno(
+            "原文章节结构确认",
+            "章节结构和跨页合并已整理，并生成 source_review.md。\n\n"
+            "是否暂停自动流程，由你人工核对/修补这个带页码的原文 Markdown？\n\n"
+            "选择“是”：打开文件，修改后点击“应用原文MD”。\n"
+            "选择“否”：批准当前版本并自动继续术语处理。",
+        ):
+            try:
+                result = choose_project_source_review(self._project(), "manual")
+                self._write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+                self.open_source_review()
+            except Exception as exc:
+                messagebox.showerror("设置原文审核失败", f"{type(exc).__name__}: {exc}")
+            return
+
+        def action():
+            self._api_environment()
+            return choose_project_source_review(self._project(), "auto")
+
+        self._run("自动批准原文MD并继续", action)
+
+    def open_source_review(self) -> None:
+        from tkinter import messagebox
+
+        try:
+            path = self._project() / "source_review.md"
+            if not path.is_file():
+                raise FileNotFoundError("尚未生成 source_review.md；请先运行准备")
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            messagebox.showerror("无法打开原文MD", f"{type(exc).__name__}: {exc}")
+
+    def apply_source_review(self) -> None:
+        def action():
+            self._api_environment()
+            return apply_project_source_review(self._project())
+
+        self._run("导入人工修订原文MD并继续", action)
 
     def generate_cover(self) -> None:
         def action():
@@ -396,11 +449,15 @@ class TranslatorGUI:
                 kind, value = self.events.get_nowait()
                 if kind == "result":
                     self._write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+                    if isinstance(value, dict) and value.get("status") == "needs_source_review_choice":
+                        self.pending_source_review_choice = value
                 elif kind == "error":
                     self._write("✗ " + value + "\n")
                     messagebox.showerror("运行失败", value)
                 elif kind == "done":
                     self.busy = False
+                    if self.pending_source_review_choice is not None:
+                        self.root.after(0, self._ask_source_review_choice)
         except queue.Empty:
             pass
         self.root.after(100, self._drain_events)

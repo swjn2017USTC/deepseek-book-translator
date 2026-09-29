@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 from ..models import Segment
 from ..epub.translation import validate_epub_translation
@@ -33,6 +33,67 @@ from ..translate import STRUCTURAL_TOKEN  # read-only regex reuse; v1 untouched
 # object still raises JSONDecodeError and is retried.
 _TOOL_MARKUP = re.compile(r"</?\s*[｜|]+\s*DSML\s*[｜|]+[^>]*>")
 
+
+def parse_target_batch(
+    content: str,
+    targets: List[Segment],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Parse compact micro-batch JSON and salvage independently valid targets.
+
+    Returns (valid translations by stable segment id, validation errors by
+    stable segment id). A syntactically invalid top-level JSON still raises so
+    the caller can split the batch without pretending any item was recovered.
+    """
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", cleaned, flags=re.I)
+    if "DSML" in cleaned:
+        cleaned = _TOOL_MARKUP.sub("", cleaned).strip()
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("Micro-batch response must be a JSON object")
+    raw = data.get("t")
+    if raw is None:
+        raw = data.get("translations")
+    if not isinstance(raw, list):
+        raise ValueError("Micro-batch response must contain list field 't'")
+
+    by_index: Dict[int, str] = {}
+    duplicates = set()
+    for item in raw:
+        index: Any = None
+        text: Any = None
+        if isinstance(item, list) and len(item) == 2:
+            index, text = item
+        elif isinstance(item, dict):
+            index = item.get("n", item.get("index"))
+            text = item.get("translated_text", item.get("translation", item.get("text")))
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            continue
+        if index < 0 or index >= len(targets):
+            raise ValueError(f"Unexpected local target index: {index}")
+        if index in by_index:
+            duplicates.add(index)
+        by_index[index] = str(text or "")
+
+    valid: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+    for index, target in enumerate(targets):
+        if index in duplicates:
+            errors[target.id] = "duplicate local target index"
+            continue
+        text = by_index.get(index, "")
+        if not text.strip():
+            errors[target.id] = "missing or empty translation"
+            continue
+        try:
+            valid[target.id] = _verify_structural_tokens(target, text)
+            validate_epub_translation(target, valid[target.id])
+        except ValueError as exc:
+            errors[target.id] = str(exc)
+    return valid, errors
 
 def parse_target_only(content: str, target: Segment) -> str:
     """Parse a strict single-target response and return the translated text.
