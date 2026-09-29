@@ -43,10 +43,22 @@ def render_book(config: Dict[str, Any], allow_partial: bool = False) -> Dict[str
         elif segment.kind == "footnote":
             footnotes.append(f"[^{segment.metadata['reference']}]: {text}")
         elif segment.kind == "image":
-            ids = ",".join(segment.source_block_ids)
-            lines += [f"<!-- IMAGE block_ids={ids} bbox={segment.metadata.get('bbox')} -->", ""]
+            if str((segment.metadata or {}).get("source_adapter") or "") == "epub_markdown_v2":
+                # Canonical EPUB imports store a project-relative Markdown image
+                # reference as the source text. Re-emit it directly so Pandoc
+                # can package the extracted image into the rebuilt EPUB.
+                lines += [segment.source_text, ""]
+            else:
+                ids = ",".join(segment.source_block_ids)
+                lines += [f"<!-- IMAGE block_ids={ids} bbox={segment.metadata.get('bbox')} -->", ""]
         elif segment.kind == "caption":
             lines += [f"*{text}*", ""]
+        elif segment.kind == "list_item":
+            lines += [f"- {text}", ""]
+        elif segment.kind == "blockquote":
+            lines += [f"> {text}", ""]
+        elif segment.kind == "definition_term":
+            lines += [f"**{text}**", ""]
         else:
             lines += [text, ""]
     if footnotes:
