@@ -72,6 +72,8 @@ def parse_target_batch(
             index = int(index)
         except (TypeError, ValueError):
             continue
+        if index < 0 or index >= len(targets):
+            raise ValueError(f"Unexpected local target index: {index}")
         if index in by_index:
             duplicates.add(index)
         by_index[index] = str(text or "")
