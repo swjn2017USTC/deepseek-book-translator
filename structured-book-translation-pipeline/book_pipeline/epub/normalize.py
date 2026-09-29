@@ -150,6 +150,7 @@ class _ContentParser(HTMLParser):
         self._in_title = False
         self._skip_depth = 0
         self._footnote_depth = 0
+        self._footnote_stack: List[str] = []
         self._current: Optional[Dict[str, Any]] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
@@ -180,6 +181,7 @@ class _ContentParser(HTMLParser):
         ).casefold()
         if name in {"aside", "section"} and ("footnote" in epub_type or "endnote" in epub_type):
             self._footnote_depth += 1
+            self._footnote_stack.append(name)
 
         if name == "br" and self._current is not None:
             self._current["parts"].append("\n")
@@ -236,8 +238,9 @@ class _ContentParser(HTMLParser):
                 row.pop("parts", None)
                 self.blocks.append(row)
             self._current = None
-        if name in {"aside", "section"} and self._footnote_depth:
-            self._footnote_depth -= 1
+        if self._footnote_stack and name == self._footnote_stack[-1]:
+            self._footnote_stack.pop()
+            self._footnote_depth = max(0, self._footnote_depth - 1)
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth:
@@ -293,8 +296,6 @@ def validate_epub_source(path: Path, *, limits: ArchiveLimits = ArchiveLimits())
         raise EPUBSecurityError(f"invalid EPUB/ZIP container: {source}")
     with zipfile.ZipFile(source) as archive:
         members = validate_archive(archive, limits)
-        if "META-INF/encryption.xml" in members:
-            raise EPUBSecurityError("encrypted/obfuscated EPUB resources are not supported by canonical import")
         rootfile = _discover_rootfile(archive, members)
         package = _parse_opf(archive, members, rootfile)
         return {
@@ -419,8 +420,7 @@ def normalize_epub(
 
     with zipfile.ZipFile(source) as archive:
         members = validate_archive(archive, limits)
-        if "META-INF/encryption.xml" in members:
-            raise EPUBSecurityError("encrypted/obfuscated EPUB resources are not supported by canonical import")
+        encryption_xml_present = "META-INF/encryption.xml" in members
         rootfile = _discover_rootfile(archive, members)
         package = _parse_opf(archive, members, rootfile)
         cover_member = _cover_member(archive, members, rootfile, package)
@@ -590,6 +590,7 @@ def normalize_epub(
         "cover_asset": cover_asset,
         "metadata": package.metadata,
         "strict_ocf_mimetype": validate_epub_source(source, limits=limits)["strict_ocf_mimetype"],
+        "encryption_xml_present": encryption_xml_present,
     }
     return {
         "segments": segments,
