@@ -475,6 +475,91 @@ def _build_epub_context_structure(book_id: str, segments: Sequence[Segment]) -> 
     }
 
 
+def _set_translation_structure(project: Dict[str, Any], structure_path: Path) -> Dict[str, Any]:
+    config_path = Path(project["translation_config"]).expanduser().resolve()
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw["structure_json"] = str(structure_path.expanduser().resolve())
+    write_json(config_path, raw)
+    return _translation_config(project)
+
+
+def _source_review_gate_result(
+    project: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    project_dir = Path(project["project_dir"]).expanduser().resolve()
+    state = source_review_state(config, project_dir)
+    if state is None:
+        return None
+    status = str(state.get("status") or "")
+    if status == "approved":
+        require_approved_source(config, project_dir)
+        require_fresh_cleaning(config)
+        return {"status": "approved", "state": state}
+    if status == "awaiting_manual_review":
+        return {
+            "schema_version": 1,
+            "book_id": project["book_id"],
+            "status": "needs_source_review",
+            "source_review": state,
+            "source_review_markdown": state.get("markdown"),
+            "translation_started": False,
+        }
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "needs_source_review_choice",
+        "source_review": state,
+        "source_review_markdown": state.get("markdown"),
+        "translation_started": False,
+    }
+
+
+def _new_source_review_gate(
+    project: Dict[str, Any],
+    config: Dict[str, Any],
+    cleaning_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    state = render_source_review(config, Path(project["project_dir"]).expanduser().resolve())
+    return {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "needs_source_review_choice",
+        "validation_ok": True,
+        "pending_structure_reviews": 0,
+        "cleaning_metrics": cleaning_metrics,
+        "source_review": state,
+        "source_review_markdown": state.get("markdown"),
+        "translation_started": False,
+    }
+
+
+def _ready_after_source_review(
+    project: Dict[str, Any],
+    config: Dict[str, Any],
+    *,
+    compatibility: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
+    glossary = generate_glossary(config)
+    status = translation_status(config)
+    result = {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+        "validation_ok": True,
+        "pending_structure_reviews": 0,
+        "source_adapter": project.get("source_adapter"),
+        "translation": status,
+        "glossary": glossary,
+        "source_review": source_review_state(config, Path(project["project_dir"])),
+        "translation_started": False,
+    }
+    if compatibility is not None:
+        result["compatibility"] = compatibility
+    return result
+
+
 def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     config = _translation_config(project)
     source = resolve_path(config, "input_epub")
