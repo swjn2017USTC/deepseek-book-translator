@@ -572,29 +572,50 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
     }
 
 
-def _translate_item(
+def _planned_batches(
     prepared: Dict[str, Any],
-    segment: Segment,
+    pending: List[Segment],
+) -> List[List[Segment]]:
+    chapters = {
+        prepared["chapter_of"].get(segment.id) or ""
+        for segment in pending
+    }
+    positions: Dict[str, Dict[str, int]] = {}
+    for chapter in chapters:
+        if chapter:
+            positions[chapter] = _context(prepared, chapter)["position"]
+    settings = prepared["settings"]
+    return plan_micro_batches(
+        pending,
+        chapter_of=prepared["chapter_of"],
+        positions=positions,
+        max_segments=settings["batch_max_segments"],
+        max_chars=settings["batch_max_chars"],
+        sensitive_max_segments=settings["sensitive_batch_max_segments"],
+    )
+
+
+def _translate_batch_item(
+    prepared: Dict[str, Any],
+    targets: List[Segment],
     *,
     batch_index: int,
     error_segments: List[str],
-) -> bool:
-    """Translate + persist one segment (shared by serial and parallel paths).
-
-    Returns True on a completed commit, False when a segment was recorded as
-    ``status:'error'`` under ``skip_failed_segments``.  Raises when
-    ``skip_failed_segments`` is false (fail-closed), so a caller can abort.
-    """
-    try:
-        outcome = _translate_one(segment, prepared, batch_index=batch_index)
-    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+) -> int:
+    outcome = _translate_microbatch(targets, prepared, batch_index=batch_index)
+    _commit_microbatch(prepared, targets, outcome)
+    failed = outcome["failures"]
+    if failed:
+        for segment in targets:
+            if segment.id not in failed:
+                continue
+            error_segments.append(segment.id)
+            _record_failed_segment(prepared, segment, RuntimeError(failed[segment.id]))
         if not prepared["settings"].get("skip_failed_segments"):
-            raise
-        _record_failed_segment(prepared, segment, exc)
-        error_segments.append(segment.id)
-        return False
-    _commit_target(prepared, segment, outcome)
-    return True
+            raise RuntimeError(
+                "micro-batch contains failed segments: " + ", ".join(sorted(failed))
+            )
+    return len(outcome["records"])
 
 
 def _translate_serial(
@@ -602,24 +623,24 @@ def _translate_serial(
     pending: List[Segment],
     error_segments: List[str],
 ) -> int:
-    """Existing single-threaded loop (max_workers<=1): unchanged behaviour."""
     translated_this_run = 0
-    for batch_index, segment in enumerate(pending, 1):
-        if _translate_item(prepared, segment, batch_index=batch_index,
-                           error_segments=error_segments):
-            translated_this_run += 1
+    batches = _planned_batches(prepared, pending)
+    for batch_index, targets in enumerate(batches, 1):
+        translated_this_run += _translate_batch_item(
+            prepared, targets, batch_index=batch_index, error_segments=error_segments,
+        )
         if prepared["delay"]:
             time.sleep(prepared["delay"])
+    prepared["last_batch_plan"] = batch_plan_summary(batches)
     return translated_this_run
 
 
 class _Pacer:
-    """Global request pacer shared by all parallel workers.
+    """Optional aggregate request pacer.
 
-    Enforces at most one request start every ``interval`` seconds across the
-    whole pool (``requests_per_minute`` stays an aggregate rate, not a per-
-    worker multiplier, so N workers cannot exceed the provider's rate budget).
-    ``interval <= 0`` (rpm<=0 in tests) disables pacing entirely.
+    A zero interval disables proactive throttling; provider 429/network retries
+    remain bounded in the HTTP client. This avoids the old default 20-RPM
+    bottleneck while retaining an explicit cap for users/providers that need it.
     """
 
     def __init__(self, interval: float) -> None:
@@ -646,33 +667,20 @@ def _translate_parallel(
     *,
     max_workers: int,
 ) -> int:
-    """Parallel translate across CHAPTER lanes; serial within a chapter.
-
-    Segments of the same chapter are processed one at a time because
-    ``_translate_one`` feeds the immediately-preceding committed translation
-    back as context.  Different chapters are fully independent, so up to
-    ``max_workers`` chapters translate concurrently.  Concurrency is bounded
-    by ``min(max_workers, len(pending))`` threads in ONE process — no child
-    processes are spawned, so nothing can become an orphaned worker holding a
-    provider slot after the run ends.  Aggregate fire rate is globally paced
-    by ``requests_per_minute`` (``_Pacer``); a worker stuck inside a bounded
-    retry chain releases its slot automatically (error row under
-    ``skip_failed_segments`` frees the lane for the next run).
-    """
-    if max_workers <= 1 or len(pending) <= 1:
+    """Run micro-batches in parallel across chapter lanes, serial per chapter."""
+    batches = _planned_batches(prepared, pending)
+    if max_workers <= 1 or len(batches) <= 1:
         return _translate_serial(prepared, pending, error_segments)
-    # Group pending by chapter, preserving source order within a chapter.
-    lanes: Dict[str, List[tuple]] = {}
-    for batch_index, segment in enumerate(pending, 1):
-        chapter = prepared["chapter_of"].get(segment.id) or ""
-        lanes.setdefault(chapter, []).append((batch_index, segment))
+
+    lanes: Dict[str, List[tuple[int, List[Segment]]]] = {}
+    for batch_index, targets in enumerate(batches, 1):
+        chapter = prepared["chapter_of"].get(targets[0].id) or ""
+        lanes.setdefault(chapter, []).append((batch_index, targets))
+
     pacer = _Pacer(prepared["delay"])
     lock = threading.Condition()
-    ready: List[str] = []            # chapter keys whose head segment is free
-    position: Dict[str, int] = {}    # chapter -> next pending index to dispatch
-    for chapter in lanes:
-        ready.append(chapter)
-        position[chapter] = 0
+    ready = list(lanes)
+    position = {chapter: 0 for chapter in lanes}
     stop = threading.Event()
     translated = 0
     inflight = 0
@@ -693,14 +701,14 @@ def _translate_parallel(
                 idx = position[chapter]
                 position[chapter] = idx + 1
                 inflight += 1
-            batch_index, segment = lanes[chapter][idx]
+            batch_index, targets = lanes[chapter][idx]
             try:
                 pacer.wait()
-                ok = _translate_item(
-                    prepared, segment, batch_index=batch_index,
+                completed = _translate_batch_item(
+                    prepared, targets, batch_index=batch_index,
                     error_segments=error_segments,
                 )
-            except BaseException as exc:  # noqa: BLE001 - propagate first error
+            except BaseException as exc:  # noqa: BLE001
                 with lock:
                     inflight -= 1
                     if not first_error:
@@ -710,20 +718,22 @@ def _translate_parallel(
                 return
             with lock:
                 inflight -= 1
-                if ok:
-                    translated += 1
+                translated += completed
                 if position[chapter] < len(lanes[chapter]):
                     ready.append(chapter)
                 lock.notify_all()
 
-    workers = [threading.Thread(target=worker, daemon=True)
-               for _ in range(min(max_workers, len(lanes)))]
+    workers = [
+        threading.Thread(target=worker, daemon=True)
+        for _ in range(min(max_workers, len(lanes)))
+    ]
     for thread in workers:
         thread.start()
     for thread in workers:
         thread.join()
     if first_error:
         raise first_error[0]
+    prepared["last_batch_plan"] = batch_plan_summary(batches)
     return translated
 
 
