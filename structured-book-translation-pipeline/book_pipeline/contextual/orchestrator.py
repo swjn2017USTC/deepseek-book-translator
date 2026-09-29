@@ -721,33 +721,23 @@ def _translate_parallel(
     *,
     max_workers: int,
 ) -> int:
-    """Parallel translate across CHAPTER lanes; serial within a chapter.
-
-    Segments of the same chapter are processed one at a time because
-    ``_translate_one`` feeds the immediately-preceding committed translation
-    back as context.  Different chapters are fully independent, so up to
-    ``max_workers`` chapters translate concurrently.  Concurrency is bounded
-    by ``min(max_workers, len(pending))`` threads in ONE process — no child
-    processes are spawned, so nothing can become an orphaned worker holding a
-    provider slot after the run ends.  Aggregate fire rate is globally paced
-    by ``requests_per_minute`` (``_Pacer``); a worker stuck inside a bounded
-    retry chain releases its slot automatically (error row under
-    ``skip_failed_segments`` frees the lane for the next run).
-    """
+    """Translate micro-batches concurrently across chapter lanes, serial in-chapter."""
     if max_workers <= 1 or len(pending) <= 1:
         return _translate_serial(prepared, pending, error_segments)
-    # Group pending by chapter, preserving source order within a chapter.
+
+    batches = build_micro_batches(
+        prepared["segments"], pending, prepared["chapter_of"], prepared["settings"]
+    )
+    prepared["planned_micro_batches"] = len(batches)
     lanes: Dict[str, List[tuple]] = {}
-    for batch_index, segment in enumerate(pending, 1):
-        chapter = prepared["chapter_of"].get(segment.id) or ""
-        lanes.setdefault(chapter, []).append((batch_index, segment))
+    for batch_index, batch in enumerate(batches, 1):
+        chapter = prepared["chapter_of"].get(batch[0].id) or ""
+        lanes.setdefault(chapter, []).append((batch_index, batch))
+
     pacer = _Pacer(prepared["delay"])
     lock = threading.Condition()
-    ready: List[str] = []            # chapter keys whose head segment is free
-    position: Dict[str, int] = {}    # chapter -> next pending index to dispatch
-    for chapter in lanes:
-        ready.append(chapter)
-        position[chapter] = 0
+    ready: List[str] = list(lanes)
+    position: Dict[str, int] = {chapter: 0 for chapter in lanes}
     stop = threading.Event()
     translated = 0
     inflight = 0
@@ -768,14 +758,13 @@ def _translate_parallel(
                 idx = position[chapter]
                 position[chapter] = idx + 1
                 inflight += 1
-            batch_index, segment = lanes[chapter][idx]
+            batch_index, batch = lanes[chapter][idx]
             try:
-                pacer.wait()
-                ok = _translate_item(
-                    prepared, segment, batch_index=batch_index,
-                    error_segments=error_segments,
+                completed = _translate_micro_batch(
+                    prepared, batch, batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer,
                 )
-            except BaseException as exc:  # noqa: BLE001 - propagate first error
+            except BaseException as exc:  # noqa: BLE001
                 with lock:
                     inflight -= 1
                     if not first_error:
@@ -785,14 +774,15 @@ def _translate_parallel(
                 return
             with lock:
                 inflight -= 1
-                if ok:
-                    translated += 1
+                translated += completed
                 if position[chapter] < len(lanes[chapter]):
                     ready.append(chapter)
                 lock.notify_all()
 
-    workers = [threading.Thread(target=worker, daemon=True)
-               for _ in range(min(max_workers, len(lanes)))]
+    workers = [
+        threading.Thread(target=worker, daemon=True)
+        for _ in range(min(max_workers, len(lanes)))
+    ]
     for thread in workers:
         thread.start()
     for thread in workers:
