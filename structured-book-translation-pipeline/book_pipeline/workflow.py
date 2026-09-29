@@ -25,6 +25,12 @@ from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
 from .structure_vision import collect_structure_vision
+from .source_manuscript import (
+    build_source_manuscript,
+    confirm_source_manuscript,
+    require_source_confirmation,
+    source_status,
+)
 from .translate import OpenAICompatibleClient, _batches, _completed, _segments, is_translation_current, translate_book, translation_status
 
 
@@ -97,6 +103,7 @@ def initialize_project(
     author: str = "",
     toc_search_end: int = 30,
     thinking_mode: str = "disabled",
+    source_confirmation: str = "manual",
 ) -> Dict[str, Any]:
     if (input_json is None) == (input_epub is None):
         raise ValueError("Choose exactly one source: input_json or input_epub")
@@ -106,6 +113,8 @@ def initialize_project(
         raise ValueError("toc_search_end must be non-negative")
     if thinking_mode not in {"disabled", "low", "high", "max"}:
         raise ValueError("thinking_mode must be one of: disabled, low, high, max")
+    if source_confirmation not in {"manual", "auto"}:
+        raise ValueError("source_confirmation must be 'manual' or 'auto'")
 
     source_adapter = "epub_native_v1" if input_epub is not None else "ocr_json_v1"
     input_path = (input_epub if input_epub is not None else input_json).expanduser().resolve()
@@ -203,6 +212,15 @@ def initialize_project(
             "allow_pending_review": False,
         },
         "glossary": str(glossary_path),
+        "source_review": {
+            "mode": source_confirmation,
+            "directory": str(project_path / "source"),
+            "markdown": str(project_path / "source" / "structured_source.md"),
+            "state": str(project_path / "source" / "source_state.json"),
+            "generated_segments": str(project_path / "source" / "generated_segments.jsonl"),
+            "cross_page_merge": True,
+            "aggressive_cross_page_merge": False,
+        },
         "glossary_settings": {
             "mode": "master_subset_plus_review",
             "master_json": str(project_path / "glossary_master.json"),
@@ -228,8 +246,15 @@ def initialize_project(
             "next_segments": 1,
             "previous_translation_max_chars": 300,
             "skip_failed_segments": True,
-            "max_workers": 1,
+            "max_workers": 4,
             "max_parse_retries": 3,
+            "micro_batch": {
+                "enabled": True,
+                "max_segments": 4,
+                "max_chars": 6000,
+                "small_kind_max_segments": 2,
+                "binary_fallback": True,
+            },
         },
         "provider": {
             "api_url": "https://api.deepseek.com/chat/completions",
@@ -239,7 +264,7 @@ def initialize_project(
             "native_json_mode": True,
             "auth_header": "Authorization",
             "auth_scheme": "Bearer",
-            "requests_per_minute": 20,
+            "requests_per_minute": 0,
             "timeout_seconds": 1200,
             "retries": 8,
             "max_tokens": 8192,
