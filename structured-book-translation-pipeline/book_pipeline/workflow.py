@@ -25,6 +25,13 @@ from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
 from .structure_vision import collect_structure_vision
+from .source_review import (
+    apply_source_review,
+    choose_source_review,
+    render_source_review,
+    require_approved_source,
+    source_review_state,
+)
 from .translate import OpenAICompatibleClient, _batches, _completed, _segments, is_translation_current, translate_book, translation_status
 
 
@@ -222,13 +229,21 @@ def initialize_project(
             },
         },
         "chunk": {"max_chars": 6000, "max_segments": 10, "max_glossary_terms": 40},
+        "source_review": {
+            "mode": "ask",
+            "markdown": str(project_path / "source_review.md"),
+            "state": str(project_path / "source_review_state.json"),
+        },
         "translation": {
             "context_mode": "contextual_v2",
             "previous_segments": 1,
             "next_segments": 1,
             "previous_translation_max_chars": 300,
+            "batch_max_segments": 4,
+            "batch_max_chars": 6000,
+            "sensitive_batch_max_segments": 1,
             "skip_failed_segments": True,
-            "max_workers": 1,
+            "max_workers": 4,
             "max_parse_retries": 3,
         },
         "provider": {
@@ -239,11 +254,11 @@ def initialize_project(
             "native_json_mode": True,
             "auth_header": "Authorization",
             "auth_scheme": "Bearer",
-            "requests_per_minute": 20,
+            "requests_per_minute": 0,
             "timeout_seconds": 1200,
             "retries": 8,
             "max_tokens": 8192,
-            "temperature": 0.2,
+            "temperature": 0.1,
         },
         "publish": {
             "epubcheck": {"enabled": True, "require": True, "path": ""},
