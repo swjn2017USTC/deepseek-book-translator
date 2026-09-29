@@ -232,98 +232,285 @@ def _context(prepared: Dict[str, Any], chapter_id: str) -> Dict[str, Any]:
     return context
 
 
+def _batch_context(
+    targets: List[Segment],
+    prepared: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not targets:
+        raise ValueError("micro-batch cannot be empty")
+    chapter_id = prepared["chapter_of"].get(targets[0].id)
+    if not chapter_id or any(prepared["chapter_of"].get(segment.id) != chapter_id for segment in targets):
+        raise RuntimeError("micro-batch targets must belong to exactly one chapter")
+    context = _context(prepared, chapter_id)
+    positions = [context["position"].get(segment.id) for segment in targets]
+    if any(position is None for position in positions):
+        raise RuntimeError("micro-batch target missing from chapter context")
+    numeric = [int(position) for position in positions]
+    if numeric != list(range(numeric[0], numeric[0] + len(numeric))):
+        raise RuntimeError("micro-batch targets must be consecutive chapter members")
+    settings = prepared["settings"]
+    first, last = numeric[0], numeric[-1]
+    members = context["members"]
+    previous_sources = [
+        segment.source_text
+        for segment in members[max(0, first - settings["previous_segments"]):first]
+    ]
+    next_sources = [
+        segment.source_text
+        for segment in members[last + 1:last + 1 + settings["next_segments"]]
+    ]
+    previous_translation = previous_translation_text(
+        context["rows"][:first],
+        max_chars=settings["previous_translation_max_chars"],
+        sentence_finish=SENTENCE_FINISH,
+    )
+    return {
+        "chapter_id": chapter_id,
+        "context": context,
+        "first": first,
+        "last": last,
+        "previous_source": previous_sources,
+        "next_source": next_sources,
+        "previous_translation": previous_translation,
+    }
+
+
+def _batch_dependencies(
+    targets: List[Segment],
+    prepared: Dict[str, Any],
+) -> tuple[Dict[str, Dict[str, int]], List[Dict[str, Any]]]:
+    dependencies: Dict[str, Dict[str, int]] = {}
+    glossary_entries: List[Dict[str, Any]] = []
+    seen = set()
+    for segment in targets:
+        deps = resolve_concept_deps(segment, prepared["concepts"])
+        dependencies[segment.id] = deps
+        for entry in glossary_subset(segment, prepared["concepts"], deps):
+            key = str(entry.get("concept_id") or entry.get("term") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            glossary_entries.append(entry)
+    return dependencies, glossary_entries
+
+
+def _prompt_for_targets(config: Dict[str, Any], targets: List[Segment]) -> str:
+    prompt = system_prompt(config)
+    if any(
+        segment.kind in {"footnote", "caption"}
+        or str((segment.metadata or {}).get("label") or "") == "reference_content"
+        for segment in targets
+    ):
+        prompt += (
+            "\n强制复核本批书目/注释：凡是引号、斜体或标题位置出现的英文书名/文章名必须给出中文译名，"
+            "不得整条照抄英文。作者、期刊、出版社、URL、DOI 可保留原文以便核对；但标题必须出现中文。"
+        )
+    return prompt
+
+
+def _request_microbatch(
+    targets: List[Segment],
+    prepared: Dict[str, Any],
+    usages: List[Dict[str, Any]],
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    context = _batch_context(targets, prepared)
+    dependencies, glossary = _batch_dependencies(targets, prepared)
+    payload = build_payload(
+        chapter_brief=prepared["brief_payloads"][context["chapter_id"]],
+        previous_source=context["previous_source"],
+        targets=targets,
+        next_source=context["next_source"],
+        previous_translation=context["previous_translation"],
+        glossary=glossary,
+    )
+    client = prepared["client"]
+    user_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    complete_json_text = getattr(client, "complete_json_text", None)
+    if callable(complete_json_text):
+        content, usage = complete_json_text(_prompt_for_targets(prepared["config"], targets), user_json)
+    else:
+        content, usage = client.complete(_prompt_for_targets(prepared["config"], targets), user_json)
+    usages.append(dict(usage or {}))
+    try:
+        return parse_target_batch(content, targets)
+    except (ValueError, json.JSONDecodeError):
+        (prepared["output_dir"] / "last_invalid_response.txt").write_text(content, encoding="utf-8")
+        raise
+
+
+def _resolve_microbatch(
+    targets: List[Segment],
+    prepared: Dict[str, Any],
+    *,
+    usages: List[Dict[str, Any]],
+    failures: Dict[str, str],
+    call_counter: List[int],
+) -> Dict[str, str]:
+    """Translate a batch, salvaging valid items and recursively splitting misses."""
+    if not targets:
+        return {}
+    max_single_attempts = prepared["settings"]["max_parse_retries"] if len(targets) == 1 else 1
+    last_error: Optional[BaseException] = None
+    for _attempt in range(max_single_attempts):
+        call_counter[0] += 1
+        try:
+            valid, errors = _request_microbatch(targets, prepared, usages)
+        except (ValueError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if len(targets) == 1:
+                continue
+            break
+        if not errors:
+            return valid
+        unresolved = [segment for segment in targets if segment.id in errors]
+        if not unresolved:
+            return valid
+        if len(unresolved) == 1:
+            child = _resolve_microbatch(
+                unresolved, prepared, usages=usages,
+                failures=failures, call_counter=call_counter,
+            )
+            valid.update(child)
+            return valid
+        midpoint = max(1, len(unresolved) // 2)
+        left = _resolve_microbatch(
+            unresolved[:midpoint], prepared, usages=usages,
+            failures=failures, call_counter=call_counter,
+        )
+        right = _resolve_microbatch(
+            unresolved[midpoint:], prepared, usages=usages,
+            failures=failures, call_counter=call_counter,
+        )
+        valid.update(left)
+        valid.update(right)
+        return valid
+
+    if len(targets) > 1:
+        midpoint = max(1, len(targets) // 2)
+        result = _resolve_microbatch(
+            targets[:midpoint], prepared, usages=usages,
+            failures=failures, call_counter=call_counter,
+        )
+        result.update(_resolve_microbatch(
+            targets[midpoint:], prepared, usages=usages,
+            failures=failures, call_counter=call_counter,
+        ))
+        return result
+
+    segment = targets[0]
+    failures[segment.id] = (
+        f"{type(last_error).__name__}: {last_error}"
+        if last_error is not None else "translation validation failed"
+    )
+    return {}
+
+
+def _translate_microbatch(
+    targets: List[Segment],
+    prepared: Dict[str, Any],
+    *,
+    batch_index: int,
+) -> Dict[str, Any]:
+    context = _batch_context(targets, prepared)
+    dependencies, _ = _batch_dependencies(targets, prepared)
+    usages: List[Dict[str, Any]] = []
+    failures: Dict[str, str] = {}
+    call_counter = [0]
+    translated = _resolve_microbatch(
+        targets, prepared, usages=usages, failures=failures, call_counter=call_counter,
+    )
+    brief = prepared["briefs"][context["chapter_id"]]
+    records: Dict[str, Dict[str, Any]] = {}
+    for segment in targets:
+        text = translated.get(segment.id)
+        if text is None:
+            continue
+        records[segment.id] = record_row(
+            segment,
+            text,
+            prepared["client"].model,
+            prepared["glossary_sha256"],
+            chapter_id=context["chapter_id"],
+            brief_hash=brief.brief_hash,
+            prompt_version=PROMPTS_VERSION,
+            deps=dependencies[segment.id],
+        )
+        records[segment.id]["metadata"]["wire_batch_size"] = len(targets)
+        records[segment.id]["metadata"]["wire_protocol"] = "contextual_microbatch_v1"
+    return {
+        "records": records,
+        "usage": aggregate_usage(usages),
+        "provider_calls": call_counter[0],
+        "batch_index": batch_index,
+        "target_ids": [segment.id for segment in targets],
+        "failures": failures,
+    }
+
+
+def _commit_microbatch(
+    prepared: Dict[str, Any],
+    targets: List[Segment],
+    outcome: Dict[str, Any],
+) -> None:
+    records = outcome["records"]
+    ordered_records = [records[segment.id] for segment in targets if segment.id in records]
+    if ordered_records:
+        with _APPEND_LOCK:
+            append_jsonl(prepared["progress_path"], ordered_records)
+    now = (
+        ordered_records[-1]["timestamp"]
+        if ordered_records else datetime.now(timezone.utc).isoformat()
+    )
+    successful_ids = [segment.id for segment in targets if segment.id in records]
+    usage_row = {
+        "timestamp": now,
+        "batch": outcome["batch_index"],
+        "model": prepared["client"].model,
+        "segment_ids": successful_ids or list(outcome["failures"]),
+        "failed_segment_ids": list(outcome["failures"]),
+        "usage": outcome["usage"],
+        "parse_attempts": outcome["provider_calls"],
+        "api_completion_requests": int((outcome["usage"] or {}).get("request_count") or outcome["provider_calls"]),
+        "prompt_version": PROMPTS_VERSION,
+        "context_mode": "contextual_v2",
+        "wire_protocol": "contextual_microbatch_v1",
+        "requested_batch_size": len(targets),
+        "completed_in_batch": len(successful_ids),
+        "status": "completed" if successful_ids else "failed_validation",
+    }
+    with _APPEND_LOCK:
+        append_jsonl(prepared["usage_path"], [usage_row])
+    for segment in targets:
+        record = records.get(segment.id)
+        if record is None:
+            continue
+        prepared["completed"][segment.id] = record
+        chapter_id = prepared["chapter_of"].get(segment.id)
+        if chapter_id and chapter_id in prepared["_contexts"]:
+            context = prepared["_contexts"][chapter_id]
+            position = context["position"].get(segment.id)
+            if position is not None:
+                context["rows"][position] = record
+
+
 def _translate_one(
     segment: Segment,
     prepared: Dict[str, Any],
     *,
     batch_index: int,
 ) -> Dict[str, Any]:
-    """Translate one pending segment with bounded parse retry and full usage accounting."""
-    config = prepared["config"]
-    output_dir = prepared["output_dir"]
-    client = prepared["client"]
-    settings = prepared["settings"]
-    chapter_id = prepared["chapter_of"].get(segment.id)
-    if not chapter_id:
-        raise RuntimeError(f"Segment {segment.id} has no chapter brief; cannot translate")
-    brief = prepared["briefs"][chapter_id]
-    context = _context(prepared, chapter_id)
-    index = context["position"].get(segment.id)
-    if index is None:
-        raise RuntimeError(f"Segment {segment.id} missing from chapter context")
-    previous_sources, next_sources = window(
-        context["members"],
-        index,
-        prev=settings["previous_segments"],
-        next_=settings["next_segments"],
-    )
-    previous_translation = previous_translation_text(
-        context["rows"][:index],
-        max_chars=settings["previous_translation_max_chars"],
-        sentence_finish=SENTENCE_FINISH,
-    )
-    dependencies = resolve_concept_deps(segment, prepared["concepts"])
-    glossary = glossary_subset(segment, prepared["concepts"], dependencies)
-    prompt = system_prompt(config)
-    if segment.kind in {"footnote", "caption"} or str((segment.metadata or {}).get("label") or "") == "reference_content":
-        prompt += (
-            "\n强制复核本条书目：凡是引号、斜体或标题位置出现的英文书名/文章名必须给出中文译名，"
-            "不得整条照抄英文。作者、期刊、出版社、URL、DOI 可保留原文以便核对；但标题必须出现中文。"
-        )
-    payload = build_payload(
-        chapter_brief=prepared["brief_payloads"][chapter_id],
-        previous_source=previous_sources,
-        target=segment,
-        next_source=next_sources,
-        previous_translation=previous_translation,
-        glossary=glossary,
-    )
-    last_error: Optional[Exception] = None
-    translated_text = ""
-    usage: Dict[str, Any] = {}
-    usages: List[Dict[str, Any]] = []
-    max_parse_retries = settings["max_parse_retries"]
-    for attempt in range(1, max_parse_retries + 1):
-        user_json = json.dumps(payload, ensure_ascii=False)
-        complete_json_text = getattr(client, "complete_json_text", None)
-        if callable(complete_json_text):
-            content, usage = complete_json_text(prompt, user_json)
-        else:
-            content, usage = client.complete(prompt, user_json)
-        usages.append(dict(usage or {}))
-        try:
-            translated_text = parse_target_only(content, segment)
-            break
-        except (ValueError, json.JSONDecodeError) as exc:
-            last_error = exc
-            (output_dir / "last_invalid_response.txt").write_text(content, encoding="utf-8")
-    if not translated_text:
-        failed_usage = aggregate_usage(usages)
-        with _APPEND_LOCK:
-            append_jsonl(prepared["usage_path"], [{
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "batch": batch_index,
-                "model": client.model,
-                "segment_ids": [segment.id],
-                "usage": failed_usage,
-                "parse_attempts": max_parse_retries,
-                "api_completion_requests": int(failed_usage.get("request_count") or max_parse_retries),
-                "prompt_version": PROMPTS_VERSION,
-                "context_mode": "contextual_v2",
-                "status": "failed_validation",
-            }])
-        raise RuntimeError(f"Segment {segment.id} failed response validation") from last_error
-    record = record_row(
-        segment,
-        translated_text,
-        client.model,
-        prepared["glossary_sha256"],
-        chapter_id=chapter_id,
-        brief_hash=brief.brief_hash,
-        prompt_version=PROMPTS_VERSION,
-        deps=dependencies,
-    )
-    return {"record": record, "usage": aggregate_usage(usages), "attempts": attempt, "batch_index": batch_index}
+    """Compatibility wrapper used by the smoke ladder."""
+    outcome = _translate_microbatch([segment], prepared, batch_index=batch_index)
+    if segment.id not in outcome["records"]:
+        reason = outcome["failures"].get(segment.id, "translation validation failed")
+        raise RuntimeError(reason)
+    return {
+        "record": outcome["records"][segment.id],
+        "usage": outcome["usage"],
+        "attempts": outcome["provider_calls"],
+        "batch_index": batch_index,
+    }
 
 
 def _commit_target(
@@ -331,32 +518,16 @@ def _commit_target(
     segment: Segment,
     outcome: Dict[str, Any],
 ) -> None:
-    """Append the record + usage row and refresh in-memory currency state."""
-    record = outcome["record"]
-    with _APPEND_LOCK:
-        append_jsonl(prepared["progress_path"], [record])
-    now = record["timestamp"]
-    usage_row = {
-        "timestamp": now,
-        "batch": outcome["batch_index"],
-        "model": record["model"],
-        "segment_ids": [segment.id],
+    """Compatibility wrapper used by the smoke ladder."""
+    wrapped = {
+        "records": {segment.id: outcome["record"]},
         "usage": outcome["usage"],
-        "parse_attempts": outcome["attempts"],
-        "api_completion_requests": int((outcome["usage"] or {}).get("request_count") or outcome["attempts"]),
-        "prompt_version": record["metadata"]["prompt_version"],
-        "context_mode": record["metadata"]["context_mode"],
-        "status": "completed",
+        "provider_calls": outcome["attempts"],
+        "batch_index": outcome["batch_index"],
+        "target_ids": [segment.id],
+        "failures": {},
     }
-    with _APPEND_LOCK:
-        append_jsonl(prepared["usage_path"], [usage_row])
-    prepared["completed"][segment.id] = record
-    chapter_id = prepared["chapter_of"].get(segment.id)
-    if chapter_id and chapter_id in prepared["_contexts"]:
-        context = prepared["_contexts"][chapter_id]
-        position = context["position"].get(segment.id)
-        if position is not None:
-            context["rows"][position] = record
+    _commit_microbatch(prepared, [segment], wrapped)
 
 
 def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, Any]:
