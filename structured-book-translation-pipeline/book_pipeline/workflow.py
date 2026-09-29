@@ -493,8 +493,19 @@ def _source_review_gate_result(
         return None
     status = str(state.get("status") or "")
     if status == "approved":
-        require_approved_source(config, project_dir)
-        require_fresh_cleaning(config)
+        try:
+            require_approved_source(config, project_dir)
+            require_fresh_cleaning(config)
+        except RuntimeError as exc:
+            return {
+                "schema_version": 1,
+                "book_id": project["book_id"],
+                "status": "needs_source_review",
+                "source_review": state,
+                "source_review_markdown": state.get("markdown"),
+                "source_review_reason": str(exc),
+                "translation_started": False,
+            }
         return {"status": "approved", "state": state}
     if status == "awaiting_manual_review":
         return {
@@ -669,10 +680,7 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
         return result
 
     config = _translation_config(project)
-    try:
-        existing_gate = _source_review_gate_result(project, config)
-    except RuntimeError:
-        existing_gate = None
+    existing_gate = _source_review_gate_result(project, config)
     if existing_gate is not None:
         if existing_gate.get("status") == "approved":
             result = _ready_after_source_review(project, config)
@@ -837,6 +845,7 @@ def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[s
 def compile_project_glossary(project_path: Path, decisions: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     config = _translation_config(project)
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
     result = compile_glossary_decisions(config, decisions)
     result["next"] = "rerun prepare"
     return result
