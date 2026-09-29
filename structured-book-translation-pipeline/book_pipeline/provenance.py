@@ -42,6 +42,21 @@ def write_clean_manifest(config: Dict[str, Any], segments_path: Path, report_pat
     else:
         manifest["input_epub"] = str(input_path)
         manifest["input_epub_sha256"] = manifest["source_sha256"]
+    review = dict(config.get("source_review") or {})
+    if input_key == "input_json" and review:
+        base = Path(config["_base_dir"])
+        markdown = Path(str(review.get("markdown") or (base / "source" / "structured_source.md"))).expanduser()
+        state = Path(str(review.get("state") or (base / "source" / "source_state.json"))).expanduser()
+        if not markdown.is_absolute():
+            markdown = (base / markdown).resolve()
+        if not state.is_absolute():
+            state = (base / state).resolve()
+        if markdown.is_file():
+            manifest["source_manuscript"] = str(markdown)
+            manifest["source_manuscript_sha256"] = file_sha256(markdown)
+        if state.is_file():
+            manifest["source_confirmation_state"] = str(state)
+            manifest["source_confirmation_state_sha256"] = file_sha256(state)
     write_json(output_dir / "pipeline_manifest.json", manifest)
     return manifest
 
@@ -68,6 +83,14 @@ def require_fresh_cleaning(config: Dict[str, Any]) -> Dict[str, Any]:
     for path, key, label in checks:
         if not path.exists() or file_sha256(path) != manifest.get(key):
             raise RuntimeError(f"Stale or changed {label}; rerun clean before translation")
+    if manifest.get("source_manuscript"):
+        manuscript = Path(str(manifest["source_manuscript"])).expanduser()
+        if not manuscript.is_file() or file_sha256(manuscript) != manifest.get("source_manuscript_sha256"):
+            raise RuntimeError("Structured source manuscript changed after confirmation; run confirm-source again")
+    if manifest.get("source_confirmation_state"):
+        state = Path(str(manifest["source_confirmation_state"])).expanduser()
+        if not state.is_file() or file_sha256(state) != manifest.get("source_confirmation_state_sha256"):
+            raise RuntimeError("Source confirmation state changed; run confirm-source again")
     if manifest.get("book_id") != config.get("book_id"):
         raise RuntimeError("Cleaning manifest belongs to a different book")
     return manifest
