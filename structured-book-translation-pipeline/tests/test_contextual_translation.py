@@ -43,6 +43,7 @@ from book_pipeline.contextual.windows import chapter_order, previous_translation
 from book_pipeline.io_utils import read_jsonl, write_json, write_jsonl
 from book_pipeline.models import Segment, digest
 from book_pipeline.provenance import file_sha256
+from book_pipeline.source_review import choose_source_review, render_source_review
 from book_pipeline.translate import SENTENCE_FINISH, translation_status
 
 BOOK_ID = "fixture-contextual-v2"
@@ -194,13 +195,7 @@ def make_segments(rows=None):
 
 
 class ContextualFakeClient:
-    """ChatClient double for the single-target contextual payload shape.
-
-    Emits ``{"id": target.id, "translated_text": "译：" + text}`` (fake targets
-    are used only to exercise machinery — never asserted as quality).  A
-    ``payload["probe"]`` document answers ``{"ok": true}`` like a provider
-    probe round-trip.
-    """
+    """ChatClient double for the compact contextual micro-batch payload."""
 
     model = "fake-contextual-model"
 
@@ -214,20 +209,18 @@ class ContextualFakeClient:
         payload = json.loads(user)
         if payload.get("probe") is not None:
             return json.dumps({"ok": True}), {"prompt_tokens": 1, "completion_tokens": 1}
-        target = payload["target"]
+        targets = payload["targets"]
         if self.mode == "leak":
-            content = json.dumps(
-                [{"id": target["id"], "translated_text": "译：" + target["text"]},
-                 {"id": "seg-ctx-9999", "translated_text": "译：leaked context"}],
-                ensure_ascii=False,
-            )
+            rows = [[row["n"], "译：" + row["text"]] for row in targets]
+            rows.append([999, "译：leaked context"])
+            content = json.dumps({"t": rows}, ensure_ascii=False)
         elif self.mode == "missing-id":
-            content = json.dumps({"translated_text": "译：" + target["text"]}, ensure_ascii=False)
+            content = json.dumps({"translated_text": "missing local indexes"}, ensure_ascii=False)
         elif self.mode == "not-json":
             content = "not json at all"
         else:
             content = json.dumps(
-                {"id": target["id"], "translated_text": "译：" + target["text"]},
+                {"t": [[row["n"], "译：" + row["text"]] for row in targets]},
                 ensure_ascii=False,
             )
         return content, {"prompt_tokens": 10, "completion_tokens": 20}
@@ -312,6 +305,9 @@ def write_fixture_book(
             "concept_glossary_path": str(concept_path) if concept_path else None,
         },
     }, ensure_ascii=False), encoding="utf-8")
+    config = load_config(config_path)
+    render_source_review(config, root)
+    choose_source_review(config, root, "auto")
     return load_config(config_path)
 
 
@@ -447,27 +443,26 @@ def test_system_prompt_carries_verbatim_only_target_clause():
     assert "required_output" not in prompt  # output contract lives in the payload
 
 
-def test_build_payload_single_target_and_context_isolation():
-    target = _segment("seg-ctx-0014")
+def test_build_payload_microbatch_and_context_isolation():
+    targets = [_segment("seg-ctx-0014"), _segment("seg-ctx-0015")]
     brief = {"title_source": "Chapter Two: Revolutionary Rupture", "kind": "chapter", "zone": "mainmatter",
-             "pages": [4, 6], "section_titles": ["The Party Congress Decides"], "segment_count": 8,
-             "brief_hash": "a" * 64}
+             "section_titles": ["The Party Congress Decides"]}
     payload = build_payload(
         chapter_brief=brief,
-        previous_source=["Earlier sentence of the same chapter.", "One more."],
-        target=target,
+        previous_source=["Earlier sentence of the same chapter."],
+        targets=targets,
         next_source=["Later sentence in the same chapter."],
         previous_translation="前一段译文",
         glossary=[{"concept_id": "concept-aaaaaaaaaaaa", "term": "party congress", "translation": "党代会",
                    "constraint": "preferred"}],
     )
-    assert payload["required_output"] == {"id": target.id, "translated_text": "translation of the target text only"}
-    assert payload["target"] == {"id": target.id, "kind": target.kind, "text": target.source_text}
+    assert payload["required_output"]["t"][0][0] == 0
+    assert [row["n"] for row in payload["targets"]] == [0, 1]
+    assert all("id" not in row for row in payload["targets"])
     serialized = json.dumps(payload, ensure_ascii=False)
-    # context ids/segments may never sit under an output field
-    assert '"segments"' not in serialized
+    assert "seg-ctx-0014" not in serialized
     assert payload["previous_source"][0].startswith("Earlier")
-    assert payload["chapter_brief"]["brief_hash"] == "a" * 64
+    assert "brief_hash" not in payload["chapter_brief"]
     assert payload["previous_translation"] == "前一段译文"
     assert payload["glossary"][0]["concept_id"] == "concept-aaaaaaaaaaaa"
 
