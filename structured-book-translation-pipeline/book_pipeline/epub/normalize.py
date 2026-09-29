@@ -15,7 +15,6 @@ from pathlib import Path, PurePosixPath
 import html
 import posixpath
 import re
-import shutil
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlsplit
 import zipfile
@@ -26,9 +25,6 @@ from .security import ArchiveLimits, EPUBSecurityError, normalize_member_name, v
 
 CONTENT_SUFFIXES = {".xhtml", ".html", ".htm"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp"}
-IMAGE_MEDIA = {
-    "image/jpeg", "image/png", "image/gif", "image/svg+xml", "image/webp",
-}
 SKIP_TAGS = {"script", "style", "code", "math", "noscript"}
 BLOCK_KINDS = {
     "p": "paragraph",
@@ -38,6 +34,8 @@ BLOCK_KINDS = {
     "caption": "caption",
     "dt": "definition_term",
     "dd": "definition_description",
+    "td": "table_cell",
+    "th": "table_cell",
     "pre": "paragraph",
 }
 REMOTE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
