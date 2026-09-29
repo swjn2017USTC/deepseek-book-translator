@@ -151,6 +151,8 @@ class _ContentParser(HTMLParser):
         self._skip_depth = 0
         self._footnote_depth = 0
         self._footnote_stack: List[str] = []
+        self._body_depth = 0
+        self._loose_parts: List[str] = []
         self._current: Optional[Dict[str, Any]] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
@@ -174,6 +176,8 @@ class _ContentParser(HTMLParser):
             self._in_title = True
             self._title_parts = []
             return
+        if name == "body":
+            self._body_depth += 1
 
         epub_type = " ".join(
             value for key, value in row.items()
@@ -200,9 +204,22 @@ class _ContentParser(HTMLParser):
 
         kind: Optional[str] = None
         level: Optional[int] = None
+        heading_hint = " ".join((
+            row.get("class", ""), row.get("id", ""), epub_type,
+        )).casefold()
         if re.fullmatch(r"h[1-6]", name):
             kind = "heading"
             level = int(name[1:])
+        elif (
+            name in {"p", "div"}
+            and any(token in heading_hint for token in (
+                "chapter-title", "chapter_title", "section-title", "section_title",
+                "heading", "head-title", "head_title", "title1", "title2",
+            ))
+        ):
+            kind = "heading"
+            level_match = re.search(r"(?:h|level|title)[-_ ]?([1-6])", heading_hint)
+            level = int(level_match.group(1)) if level_match else 2
         elif name in BLOCK_KINDS:
             kind = "footnote" if self._footnote_depth else BLOCK_KINDS[name]
 
@@ -230,6 +247,8 @@ class _ContentParser(HTMLParser):
             if value:
                 self.document_title = value
             return
+        if name == "body" and self._body_depth:
+            self._body_depth -= 1
         if self._current is not None and name == self._current["tag"]:
             text = _clean_text("".join(self._current["parts"]))
             if text:
@@ -249,6 +268,8 @@ class _ContentParser(HTMLParser):
             self._title_parts.append(data)
         if self._current is not None:
             self._current["parts"].append(data)
+        elif self._body_depth and data.strip():
+            self._loose_parts.append(data)
 
 
 def _clean_text(value: str) -> str:
@@ -454,6 +475,10 @@ def normalize_epub(
                 warnings.append(f"{href}: tolerant HTML parser recovered partially after {type(exc).__name__}")
 
             blocks = list(parser.blocks)
+            if not blocks:
+                loose = _clean_text(" ".join(parser._loose_parts))
+                if loose:
+                    blocks.append({"kind": "paragraph", "text": loose, "level": None, "id": ""})
             if not any(row.get("kind") == "heading" for row in blocks):
                 title = parser.document_title.strip()
                 if title and title.casefold() not in {"untitled", "contents", "table of contents"}:
@@ -467,6 +492,9 @@ def normalize_epub(
                     member = _resolve_member(href, str(block.get("src") or ""))
                     if member is None:
                         skipped["remote_or_invalid_image"] += 1
+                        continue
+                    if cover_member and member == cover_member:
+                        skipped["cover_image_body_duplicate"] += 1
                         continue
                     asset = _copy_asset(archive, members, member, project, asset_cache)
                     if not asset:
