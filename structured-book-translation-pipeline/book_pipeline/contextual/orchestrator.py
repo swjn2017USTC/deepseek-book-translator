@@ -47,8 +47,15 @@ from .invalidation import (
     current_concept_versions,
     is_translation_current_v2,
 )
-from .parser import parse_target_only
-from .prompts import PROMPTS_VERSION, build_payload, system_prompt
+from .batching import build_micro_batches
+from .parser import parse_batch_partial, parse_target_only
+from .prompts import (
+    PROMPTS_VERSION,
+    batch_system_prompt,
+    build_batch_payload,
+    build_payload,
+    system_prompt,
+)
 from .records import record_row
 from .windows import chapter_order, previous_translation_text, window
 
@@ -99,11 +106,13 @@ def _v2_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("translation.previous_translation_max_chars must be non-negative")
     if max_parse_retries < 1 or max_parse_retries > 10:
         raise ValueError("translation.max_parse_retries must be between 1 and 10")
+    micro_batch = dict(translation.get("micro_batch") or {})
     return {
         "previous_segments": previous_segments,
         "next_segments": next_segments,
         "previous_translation_max_chars": previous_translation_max_chars,
         "max_parse_retries": max_parse_retries,
+        "micro_batch": micro_batch,
         # P09 unattended-run fix: when true, a segment that fails all parse
         # attempts is recorded as an explicit status:'error' row and SKIPPED so
         # the rest of the book still translates; the next run retries it.
@@ -162,7 +171,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
     for segment in segments:
         if segment.translatable or segment.source_text.strip():
             chapter_of[segment.id] = brief_key_for_segment(segment, nodes_by_id)
-    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 20))
+    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 0))
     delay = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
 
     def current(segment: Segment) -> bool:
@@ -190,6 +199,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
         "brief_hashes": brief_hashes,
         "brief_payloads": brief_payloads,
         "glossary_sha256": glossary_sha256,
+        "prompt_version": PROMPTS_VERSION,
         "delay": delay,
         "current": current,
         "_contexts": {},
