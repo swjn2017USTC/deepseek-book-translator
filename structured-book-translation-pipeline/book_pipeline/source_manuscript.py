@@ -22,11 +22,11 @@ from .models import Segment, digest
 from .provenance import file_sha256, write_clean_manifest
 
 
-SEGMENT_MARKER = re.compile(r"^<!-- DBT:SEG ([A-Za-z0-9._:-]+) -->\\s*$", re.M)
-PAGE_NOTICE = re.compile(r"^> \\*\\*〔OCR/PDF 页：[^〕]+〕\\*\\*\\s*$")
-HEADING = re.compile(r"^(#{1,6})\\s+(.+?)\\s*$")
-CONTINUATION_START = re.compile(r"^[a-zäöüßà-ÿ,;:—–\\-\\)\\]\\}»”’]")
-CONTINUATION_END = re.compile(r"[,;:—–\\-]\\s*$")
+SEGMENT_MARKER = re.compile(r"^<!-- DBT:SEG ([A-Za-z0-9._:-]+) -->\s*$", re.M)
+PAGE_NOTICE = re.compile(r"^> \*\*〔OCR/PDF 页：[^〕]+〕\*\*\s*$")
+HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+CONTINUATION_START = re.compile(r"^[a-zäöüßà-ÿ,;:—–\-\)\]\}»”’]")
+CONTINUATION_END = re.compile(r"[,;:—–\-]\s*$")
 
 
 def _settings(config: Dict[str, Any]) -> Dict[str, Any]:
