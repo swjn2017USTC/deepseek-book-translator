@@ -562,6 +562,17 @@ def _ready_after_source_review(
 
 def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     config = _translation_config(project)
+    project_dir = Path(project["project_dir"]).expanduser().resolve()
+
+    existing_gate = _source_review_gate_result(project, config)
+    if existing_gate is not None:
+        if existing_gate.get("status") == "approved":
+            result = _ready_after_source_review(project, config)
+            write_json(project_dir / "workflow_status.json", result)
+            return result
+        write_json(project_dir / "workflow_status.json", existing_gate)
+        return existing_gate
+
     source = resolve_path(config, "input_epub")
     structure_dir = Path(project["structure_dir"])
     structure_dir.mkdir(parents=True, exist_ok=True)
@@ -593,7 +604,7 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
             "compatibility": compatibility,
             "translation_started": False,
         }
-        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        write_json(project_dir / "workflow_status.json", result)
         return result
 
     segmented = segment_epub(source, str(config["book_id"]))
@@ -610,6 +621,7 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
         "compatibility_status": compatibility.get("status"),
         "checks": ["ocf", "package", "navigation", "links", "resources"],
     })
+    config = _set_translation_structure(project, structure_path)
 
     cleaning = dict(segmented["cleaning_report"])
     cleaning["compatibility_status"] = compatibility.get("status")
@@ -620,22 +632,10 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     write_json(work_dir / "source_manifest.json", segmented["source_manifest"])
     write_clean_manifest(config, segments_path, report_path)
 
-    glossary = generate_glossary(config)
-    status = translation_status(config)
-    result = {
-        "schema_version": 1,
-        "book_id": project["book_id"],
-        "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
-        "validation_ok": True,
-        "pending_structure_reviews": 0,
-        "source_adapter": "epub_native_v1",
-        "compatibility": compatibility,
-        "cleaning_metrics": cleaning["metrics"],
-        "translation": status,
-        "glossary": glossary,
-        "translation_started": False,
-    }
-    write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+    result = _new_source_review_gate(project, config, cleaning["metrics"])
+    result["compatibility"] = compatibility
+    result["source_adapter"] = "epub_native_v1"
+    write_json(project_dir / "workflow_status.json", result)
     return result
 
 
