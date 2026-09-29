@@ -245,7 +245,7 @@ def write_chapter_briefs(
     document = {
         "schema_version": 1,
         "book_id": book_id,
-        "prompts_version": 1,
+        "prompts_version": 2,
         "briefs": rows,
     }
     path = Path(output_dir) / "chapter_briefs.json"
