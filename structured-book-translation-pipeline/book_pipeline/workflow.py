@@ -916,7 +916,14 @@ def project_status(project_path: Path) -> Dict[str, Any]:
     translation = translation_status(config) if cleaned else None
     source_review = source_review_state(config, Path(project["project_dir"]).expanduser().resolve()) if cleaned else None
     source_review_status = str((source_review or {}).get("status") or "")
-    source_review_approved = source_review_status == "approved"
+    source_review_approved = False
+    source_review_reason: Optional[str] = None
+    if source_review_status == "approved":
+        try:
+            require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
+            source_review_approved = True
+        except RuntimeError as exc:
+            source_review_reason = str(exc)
     vision_path = structure_dir / "vision_structure.json"
     vision = None
     if vision_path.is_file():
@@ -975,6 +982,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "stale_reason": stale_reason,
         "source_review": source_review,
         "source_review_approved": source_review_approved,
+        "source_review_reason": source_review_reason,
         "glossary_ready": glossary_ready,
         "glossary_reason": glossary_reason,
         "translation": translation,
