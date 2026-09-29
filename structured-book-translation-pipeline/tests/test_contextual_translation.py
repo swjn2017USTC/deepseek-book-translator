@@ -930,14 +930,15 @@ def test_translate_v2_skip_failed_segments_records_error_and_continues(tmp_path)
         "skip_failed_segments": True,
     })
 
-    class _SkipThenOk(ContextualFakeClient):
+    class _OneTargetAlwaysFails(ContextualFakeClient):
         def complete(self, system, user):
-            self.calls.append(1)
-            if len(self.calls) <= 1:
-                raise ValueError("forced invalid response")
+            payload = json.loads(user)
+            if payload.get("targets") and payload["targets"][0]["text"] == SEG_BY_ID["seg-ctx-0001"]["source_text"]:
+                self.calls.append({"system": system, "user": user})
+                return "not json at all", {"prompt_tokens": 10, "completion_tokens": 1}
             return super().complete(system, user)
 
-    fake = _SkipThenOk()
+    fake = _OneTargetAlwaysFails()
     report = translate_v2(config, fake, limit=4)
     rows = list(read_jsonl(Path(config["output_dir"]) / "translations.jsonl"))
     errors = [r for r in rows if r.get("status") == "error"]
@@ -995,14 +996,15 @@ def test_translate_v2_parallel_skip_failed_records_error_and_continues(tmp_path)
         "max_workers": 4,
     })
 
-    class _FirstCallFails(ContextualFakeClient):
+    class _OneTargetAlwaysFails(ContextualFakeClient):
         def complete(self, system, user):
-            self.calls.append(1)
-            if len(self.calls) <= 1:
-                raise ValueError("forced invalid response")
+            payload = json.loads(user)
+            if payload.get("targets") and payload["targets"][0]["text"] == SEG_BY_ID["seg-ctx-0001"]["source_text"]:
+                self.calls.append({"system": system, "user": user})
+                return "not json at all", {"prompt_tokens": 10, "completion_tokens": 1}
             return super().complete(system, user)
 
-    report = translate_v2(config, _FirstCallFails())
+    report = translate_v2(config, _OneTargetAlwaysFails())
     rows = list(read_jsonl(Path(config["output_dir"]) / "translations.jsonl"))
     errors = [r for r in rows if r.get("status") == "error"]
     completed = [r for r in rows if r.get("status") == "completed"]
@@ -1031,7 +1033,7 @@ def test_translate_v2_parallel_fail_closed_without_skip(tmp_path):
         def complete(self, system, user):
             raise ValueError("forced invalid response")
 
-    with pytest.raises(ValueError, match="forced invalid response"):
+    with pytest.raises(RuntimeError, match="micro-batch contains failed segments"):
         translate_v2(config, _AlwaysFails())
 
 
