@@ -568,7 +568,19 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     if _is_epub_project(project):
         return _prepare_epub_project(project)
-    _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
+
+    config = _translation_config(project)
+    source_gate = source_status(config)
+    # Once a reviewable source manuscript exists, repeated prepare calls must
+    # not overwrite it (or a human-confirmed structure) by rerunning chapter
+    # recovery. A stale source/structure pair intentionally falls back to a
+    # fresh deterministic analysis.
+    preserve_review_source = source_gate.get("status") in {
+        "needs_confirmation", "confirmed", "edited_after_confirmation",
+    }
+    if not preserve_review_source:
+        _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
+
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
     review_path = structure_dir / "review_packets.jsonl"
@@ -585,24 +597,50 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
             "pending_structure_reviews": pending,
             "review_packets": str(review_path),
             "decision_template": str(template),
+            "source_manuscript": source_status(config),
             "translation_started": False,
         }
-    else:
-        config = _translation_config(project)
+        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        return result
+
+    source_gate = source_status(config)
+    if source_gate.get("status") in {"not_generated", "stale", "invalid_state"}:
         cleaning = clean_book(config)
-        glossary = generate_glossary(config)
-        status = translation_status(config)
+        source_gate = build_source_manuscript(config, force=True)
+    else:
+        cleaning_path = resolve_path(config, "output_dir") / "cleaning_report.json"
+        cleaning = json.loads(cleaning_path.read_text(encoding="utf-8")) if cleaning_path.is_file() else {"metrics": {}}
+
+    if source_gate.get("status") in {"needs_confirmation", "edited_after_confirmation"}:
         result = {
             "schema_version": 1,
             "book_id": project["book_id"],
-            "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+            "status": "needs_source_confirmation",
             "validation_ok": True,
             "pending_structure_reviews": 0,
-            "cleaning_metrics": cleaning["metrics"],
-            "translation": status,
-            "glossary": glossary,
+            "source_manuscript": source_gate,
+            "cleaning_metrics": cleaning.get("metrics", {}),
             "translation_started": False,
         }
+        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        return result
+
+    require_source_confirmation(config)
+    require_fresh_cleaning(config)
+    glossary = generate_glossary(config)
+    status = translation_status(config)
+    result = {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+        "validation_ok": True,
+        "pending_structure_reviews": 0,
+        "source_manuscript": source_status(config),
+        "cleaning_metrics": cleaning.get("metrics", {}),
+        "translation": status,
+        "glossary": glossary,
+        "translation_started": False,
+    }
     write_json(Path(project["project_dir"]) / "workflow_status.json", result)
     return result
 
@@ -675,6 +713,40 @@ def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     chapter_config["overrides"] = str(output)
     write_json(chapter_config_path, chapter_config)
     return {"book_id": project["book_id"], "status": "reviews_compiled", "overrides": str(output), "next": "rerun prepare"}
+
+
+def confirm_source_project(project_path: Path) -> Dict[str, Any]:
+    project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        return {"status": "not_applicable", "source_adapter": "epub_native_v1"}
+    config = _translation_config(project)
+    confirmed = confirm_source_manuscript(config)
+    prepared = prepare_project(project_path)
+    return {"status": confirmed["status"], "source_manuscript": confirmed, "prepared": prepared}
+
+
+def set_source_confirmation_mode(project_path: Path, mode: str) -> Dict[str, Any]:
+    if mode not in {"manual", "auto"}:
+        raise ValueError("source confirmation mode must be manual or auto")
+    project = _project_manifest(project_path)
+    config_path = Path(project["translation_config"]).expanduser().resolve()
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    review = dict(raw.get("source_review") or {})
+    review["mode"] = mode
+    raw["source_review"] = review
+    write_json(config_path, raw)
+    state_path = Path(str(review.get("state") or (Path(project["project_dir"]) / "source" / "source_state.json"))).expanduser()
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["mode"] = mode
+        write_json(state_path, state)
+    if mode == "auto":
+        config = _translation_config(project)
+        status = source_status(config)
+        if status.get("status") in {"needs_confirmation", "edited_after_confirmation"}:
+            confirmed = confirm_source_manuscript(config)
+            return {"status": "updated_and_confirmed", "mode": mode, "source_manuscript": confirmed}
+    return {"status": "updated", "mode": mode}
 
 
 def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[str, Any]:
