@@ -15,6 +15,7 @@ from .review_gui import ReviewWindow
 
 from .workflow import (
     auto_review_project_glossary,
+    confirm_source_project,
     export_project,
     generate_project_cover,
     initialize_project,
@@ -99,6 +100,7 @@ class TranslatorGUI:
             "domain": tk.StringVar(value="学术人文社科"),
             "model": tk.StringVar(value=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")),
             "thinking_mode": tk.StringVar(value=os.environ.get("DEEPSEEK_THINKING_MODE", "disabled")),
+            "source_confirmation": tk.StringVar(value="manual"),
             "api_key": tk.StringVar(),
             "limit": tk.StringVar(value="10"),
             "theme": tk.StringVar(value="auto"),
@@ -137,6 +139,11 @@ class TranslatorGUI:
             options, textvariable=self.values["thinking_mode"], width=10, state="readonly",
             values=("disabled", "low", "high", "max"),
         ).pack(side="left", padx=(6, 16))
+        ttk.Label(options, text="原文核对").pack(side="left")
+        ttk.Combobox(
+            options, textvariable=self.values["source_confirmation"], width=8, state="readonly",
+            values=("manual", "auto"),
+        ).pack(side="left", padx=(6, 16))
         ttk.Label(options, text="累计翻译数").pack(side="left")
         ttk.Entry(options, textvariable=self.values["limit"], width=8).pack(side="left", padx=(6, 20))
         ttk.Label(options, text="封面主题").pack(side="left")
@@ -149,12 +156,14 @@ class TranslatorGUI:
         buttons.grid(row=13, column=0, columnspan=2, sticky="ew", pady=10)
         actions = (
             ("1 初始化项目", self.create_project),
-            ("2 准备/Vision章节/自动术语", self.prepare),
+            ("2 准备/Vision章节", self.prepare),
             ("3 章节审核", lambda: self.open_review("structure")),
-            ("4 术语人工复核(可选)", lambda: self.open_review("glossary")),
-            ("5 生成封面", self.generate_cover),
-            ("6 零网络预检", self.preflight),
-            ("7 翻译", self.translate),
+            ("4 打开结构化原文", self.open_source_manuscript),
+            ("5 确认结构化原文", self.confirm_source),
+            ("6 术语人工复核(可选)", lambda: self.open_review("glossary")),
+            ("7 生成封面", self.generate_cover),
+            ("8 零网络预检", self.preflight),
+            ("9 翻译", self.translate),
             ("状态", lambda: self._run("读取状态", lambda: project_status(self._project()))),
             ("渲染/生成成品", lambda: self._run("渲染", lambda: render_project(self._project()))),
             ("导出成品", lambda: self._run("导出", lambda: export_project(self._project(), "both"))),
@@ -175,7 +184,7 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(15, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("选择 OCR JSON 或 EPUB，填写元数据并输入 API Key。OCR 项目首次准备会先做离线章节恢复，再自动用 DeepSeek Vision 识别目录和遗漏小节；仍有歧义才需要人工章节审核，章节通过后术语继续自动处理。\n")
+        self._write("选择 OCR JSON 或 EPUB。OCR 项目会先恢复章节并用 Vision 补强，然后生成带页码的 source/structured_source.md。原文核对=manual 时会停下来等你修改并确认；auto 则自动确认并继续。确认后的原文才进入术语与 micro-batch 翻译。\n")
 
     def open_review(self, kind: str) -> None:
         from tkinter import messagebox
@@ -272,6 +281,7 @@ class TranslatorGUI:
                 target_lang=self.values["target_lang"].get().strip() or "简体中文",
                 domain=self.values["domain"].get().strip() or "学术人文社科",
                 thinking_mode=self.values["thinking_mode"].get().strip() or "disabled",
+                source_confirmation=self.values["source_confirmation"].get().strip() or "manual",
             )
 
         self._run("初始化项目", action)
@@ -309,6 +319,47 @@ class TranslatorGUI:
 
     def prepare(self) -> None:
         self._run("准备项目 / Vision 章节增强 / LLM 自动术语审核", self._prepare_action)
+
+    def open_source_manuscript(self) -> None:
+        from tkinter import messagebox
+
+        try:
+            path = self._project() / "source" / "structured_source.md"
+            if not path.is_file():
+                raise FileNotFoundError("尚未生成 structured_source.md；请先运行“准备/Vision章节”")
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except (OSError, FileNotFoundError) as exc:
+            messagebox.showerror("无法打开结构化原文", str(exc))
+
+    def confirm_source(self) -> None:
+        from tkinter import messagebox
+
+        if not messagebox.askyesno(
+            "确认结构化原文",
+            "确认已经核对并保存 structured_source.md？确认后它会成为术语与翻译的原文来源。",
+        ):
+            return
+
+        def action():
+            confirmed = confirm_source_project(self._project())
+            prepared = confirmed.get("prepared") or {}
+            if prepared.get("status") == "needs_glossary_review":
+                self._api_environment()
+                automatic = auto_review_project_glossary(self._project())
+                final = prepare_project(self._project())
+                return {
+                    "source_confirmation": confirmed,
+                    "llm_glossary_review": automatic,
+                    "prepared": final,
+                }
+            return confirmed
+
+        self._run("确认结构化原文 / 自动术语审核", action)
 
     def generate_cover(self) -> None:
         def action():
