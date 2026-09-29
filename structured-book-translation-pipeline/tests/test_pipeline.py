@@ -17,6 +17,7 @@ from book_pipeline.migrate import (
 )
 from book_pipeline.migration_preview import create_migration_preview
 from book_pipeline.render import render_book
+from book_pipeline.source_review import choose_source_review
 from book_pipeline.publish import (
     build_book_tex,
     clean_for_latex,
@@ -248,8 +249,12 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert (translation["previous_segments"], translation["next_segments"]) == (1, 1)
     assert translation["previous_translation_max_chars"] == 300
     assert translation["skip_failed_segments"] is True
-    assert translation["max_workers"] == 1
+    assert translation["max_workers"] == 4
     assert translation["max_parse_retries"] == 3
+    assert translation["batch_max_segments"] == 4
+    assert translation["batch_max_chars"] == 6000
+    assert translation["sensitive_batch_max_segments"] == 1
+    assert translation_config["provider"]["requests_per_minute"] == 0
     assert translation_config["publish"]["epubcheck"] == {
         "enabled": True, "require": True, "path": ""
     }
@@ -260,6 +265,11 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
 
     prepared = prepare_project(project_dir)
 
+    assert prepared["status"] == "needs_source_review_choice"
+    assert (project_dir / "source_review.md").is_file()
+    loaded = load_config(project_dir / "translation_config.json")
+    choose_source_review(loaded, project_dir, "auto")
+    prepared = prepare_project(project_dir)
     assert prepared["status"] == "needs_glossary_review"
     candidates = list(read_jsonl(project_dir / "glossary_candidates.jsonl"))
     assert candidates
@@ -304,7 +314,8 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert preflight["status"] == "preflight_passed"
     assert preflight["external_requests_made"] == 0
     assert preflight["estimated_remaining_batches"] > 0
-    assert preflight["estimated_remaining_requests"] == preflight["remaining_segments"]
+    assert preflight["estimated_remaining_requests"] <= preflight["remaining_segments"]
+    assert preflight["micro_batch_plan"]["average_batch_size"] >= 1
     assert preflight["thinking_mode"] == "disabled"
     with pytest.raises(ValueError, match="target-completed"):
         translate_project(project_dir, target_completed=None, all_segments=False)
