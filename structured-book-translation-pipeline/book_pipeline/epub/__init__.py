@@ -1,6 +1,7 @@
 """Safe native EPUB inspection, segmentation, rewrite and repackaging."""
 
 from .inventory import inspect_epub, inspect_tree, write_inspection_reports
+from .normalize import normalize_epub, validate_epub_source
 from .repack import pack_epub
 from .render import render_epub
 from .rewrite import EPUBRewriteError, rewrite_epub_tree
@@ -10,6 +11,8 @@ from .validate import validate_rendered_tree
 __all__ = [
     "inspect_epub",
     "inspect_tree",
+    "normalize_epub",
+    "validate_epub_source",
     "write_inspection_reports",
     "segment_epub",
     "reconstruct_segment_slots",
