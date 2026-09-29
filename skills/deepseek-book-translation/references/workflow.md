@@ -67,6 +67,34 @@ python3 new_book.py prepare --project '<PROJECT_DIR>'
 
 Repeat only when new evidence-backed packets remain. Do not convert an uncertain packet to `accept` just to clear the gate.
 
+## Reviewed source gate
+
+After structure recovery/review is clear, rerun `prepare`. The pipeline now writes `source_review.md`: a readable reconstruction of the original book with Markdown heading hierarchy, source-page markers, conservative post-structure cross-page paragraph stitching, and hidden stable `BOOK_SEGMENT` markers.
+
+Before glossary or translation, ask the user whether they want to manually inspect/correct this file.
+
+Manual path:
+
+```bash
+python3 new_book.py source-review --project '<PROJECT_DIR>' --mode manual
+```
+
+Tell the user the exact `source_review.md` path and stop. Do not call glossary or translation while they are reviewing. When the user explicitly says the review is complete:
+
+```bash
+python3 new_book.py apply-source-review --project '<PROJECT_DIR>'
+```
+
+The importer updates canonical segment text/source hashes and heading levels/parents, writes `work/reviewed_structure.json`, and then continues automatic terminology review.
+
+Fully automatic path:
+
+```bash
+python3 new_book.py source-review --project '<PROJECT_DIR>' --mode auto
+```
+
+This approves the generated Markdown and continues terminology automation. Any later edit to `source_review.md` invalidates approval until it is reapplied.
+
 ## Glossary gate
 
 Once the structure gate is clear, terminology review is automatic by default. With `DEEPSEEK_API_KEY` available, run:
@@ -88,7 +116,7 @@ python3 new_book.py preflight --project '<PROJECT_DIR>'
 python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 10
 ```
 
-The generated configuration selects the contextual v2 translator with bounded 1/1 same-chapter context, a 300-character previous-translation tail, resumable failures, and one public-safe worker. Inspect the ten translations for completeness, terminology, title handling, and structural-token preservation. If they pass, continue cumulatively:
+The generated configuration selects contextual micro-batching: bounded 1/1 external same-chapter context, a 300-character previous-translation tail, up to 4 consecutive targets / 6000 source characters per ordinary batch, singleton handling for high-structure-risk items, and up to 4 chapter lanes. Valid siblings are salvaged when one target fails; only unresolved targets are recursively split/retried. Inspect the ten translations for completeness, terminology, title handling, and structural-token preservation. If they pass, continue cumulatively:
 
 ```bash
 python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 100
@@ -96,7 +124,7 @@ python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 500
 python3 new_book.py translate --project '<PROJECT_DIR>' --all
 ```
 
-Account limits vary. Increase `translation.max_workers` only after a successful smoke run and only within the provider's documented limits. Never copy private-provider concurrency measurements into a public default.
+Preflight reports the actual planned batch count and average batch size. `provider.requests_per_minute=0` disables proactive pacing by default; bounded provider 429/network backoff remains active. Reduce `translation.max_workers` or set an explicit RPM cap if an account/provider needs stricter throttling.
 
 ## QA and publication
 
