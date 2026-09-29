@@ -1242,7 +1242,7 @@ def export_project(project_path: Path, output_format: str = "both") -> Dict[str,
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare and translate an OCR JSON or native EPUB book safely")
+    parser = argparse.ArgumentParser(description="Prepare and translate an OCR JSON/PDF or normalized EPUB book safely")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="create a self-contained new-book project")
     source = init.add_mutually_exclusive_group(required=True)
