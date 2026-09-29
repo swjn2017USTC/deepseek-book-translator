@@ -17,7 +17,7 @@ from .cover_generator import generate_typographic_cover
 from .io_utils import read_jsonl, write_json, write_jsonl
 from .models import Segment
 from .provenance import write_clean_manifest
-from .epub import inspect_epub, render_epub, segment_epub
+from .epub import inspect_epub, normalize_epub, render_epub, segment_epub, validate_epub_source
 from .epub.tokens import strip_tokens
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
 from .glossary_llm import auto_review_glossary
@@ -78,16 +78,23 @@ def _validate_ocr_path(path: Path) -> None:
 def _validate_epub_path(path: Path) -> None:
     if not path.is_file():
         raise FileNotFoundError(path)
-    # Native inspection validates ZIP/OCF/package safety without modifying the source.
-    inspect_epub(path)
+    # New EPUB projects use a tolerant canonical importer. It preserves ZIP
+    # safety checks while avoiding strict source-DOM/OCF conformance as a
+    # prerequisite for translation.
+    validate_epub_source(path)
 
 
 def _is_epub_project(project: Dict[str, Any]) -> bool:
-    return str(project.get("source_adapter") or "") == "epub_native_v1"
+    return str(project.get("source_adapter") or "") in {"epub_native_v1", "epub_markdown_v2"}
 
 
 def _is_epub_config(config: Dict[str, Any]) -> bool:
-    return str(config.get("source_adapter") or "") == "epub_native_v1" or bool(config.get("input_epub"))
+    """Return True only for the legacy DOM-preserving EPUB renderer.
+
+    New epub_markdown_v2 projects intentionally render/export through the
+    generic Markdown publisher.
+    """
+    return str(config.get("source_adapter") or "") == "epub_native_v1"
 
 
 def initialize_project(
@@ -114,7 +121,7 @@ def initialize_project(
     if thinking_mode not in {"disabled", "low", "high", "max"}:
         raise ValueError("thinking_mode must be one of: disabled, low, high, max")
 
-    source_adapter = "epub_native_v1" if input_epub is not None else "ocr_json_v1"
+    source_adapter = "epub_markdown_v2" if input_epub is not None else "ocr_json_v1"
     input_path = (input_epub if input_epub is not None else input_json).expanduser().resolve()
     if input_epub is not None:
         _validate_epub_path(input_path)
@@ -176,13 +183,13 @@ def initialize_project(
         write_json(structure_dir / "book_structure.json", {
             "schema_version": 1,
             "book_id": book_id,
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
             "nodes": [],
         })
         write_json(structure_dir / "validation.json", {
             "schema_version": 1,
             "ok": False,
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
             "status": "not_prepared",
         })
         write_jsonl(structure_dir / "review_packets.jsonl", [])
@@ -441,7 +448,7 @@ def _build_epub_context_structure(book_id: str, segments: Sequence[Segment]) -> 
         "parent_id": None,
         "page_json": None,
         "zone": "mainmatter",
-        "adapter": "epub_native_v1",
+        "adapter": "epub_markdown_v2",
     }]
     stacks: Dict[str, list[tuple[int, str]]] = {}
     for segment in segments:
@@ -473,13 +480,13 @@ def _build_epub_context_structure(book_id: str, segments: Sequence[Segment]) -> 
             "zone": segment.zone,
             "href": href,
             "spine_index": metadata.get("spine_index"),
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
         })
         stack.append((level, segment.id))
     return {
         "schema_version": 1,
         "book_id": book_id,
-        "adapter": "epub_native_v1",
+        "adapter": "epub_markdown_v2",
         "nodes": nodes,
     }
 
@@ -610,7 +617,7 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
         validation = {
             "schema_version": 1,
             "ok": False,
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
             "status": "blocked_epub_compatibility",
             "compatibility_status": compatibility.get("status"),
             "compatibility_report": str(structure_dir / "compatibility_report.json"),
@@ -636,7 +643,7 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     write_json(validation_path, {
         "schema_version": 1,
         "ok": True,
-        "adapter": "epub_native_v1",
+        "adapter": "epub_markdown_v2",
         "status": "compatible",
         "compatibility_status": compatibility.get("status"),
         "checks": ["ocf", "package", "navigation", "links", "resources"],
