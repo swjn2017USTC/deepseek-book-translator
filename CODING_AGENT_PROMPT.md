@@ -4,20 +4,20 @@
 
 ---
 
-需要处理的书籍输入：`<BOOK_INPUT_ABSOLUTE_PATH>`（PaddleOCR JSON 或 reflowable EPUB）
+需要处理的书籍输入：`<BOOK_INPUT_ABSOLUTE_PATH>`（PaddleOCR JSON/PDF 或 EPUB）
 
-请使用当前仓库的 `chapter-structure-recovery-lab` 与 `structured-book-translation-pipeline`，把这本 OCR JSON/PDF 或 reflowable EPUB 处理为结构化中文译稿。你负责执行完整工作流、检查产物和报告仍需人工决定的问题。不要修改 OCR 原文件，不要把 OCR、译文、封面、API key 或其他私有数据提交到 Git。
+请使用当前仓库的 `chapter-structure-recovery-lab` 与 `structured-book-translation-pipeline`，把这本 OCR JSON/PDF 或 EPUB 处理为结构化中文译稿。EPUB 新项目必须先标准化为 canonical reviewed-source Markdown，不要默认做源 DOM 原位回写。你负责执行完整工作流、检查产物和报告仍需人工决定的问题。不要修改 OCR 原文件，不要把 OCR、译文、封面、API key 或其他私有数据提交到 Git。
 
 ## 必须遵守的边界
 
 1. 先读仓库根目录 `README.md`、两个子项目的 `README.md`、本书生成后的 `RUNBOOK.md`，再运行命令。
 2. 只处理用户有权处理并发送给 DeepSeek API 的文本。
 3. API key 只能从进程环境变量 `DEEPSEEK_API_KEY` 读取。不要要求用户把 key 粘贴进对话，不要打印、记录或写入任何文件；如果变量未设置，停在零网络预检之前，给出设置命令。
-4. OCR/PDF 项目先跑纯离线 `prepare`，再在人工章节审核前跑 `vision-structure`。Vision 是补强证据：可以识别 TOC 页、目录层级和遗漏小节，但不得为了过门禁而猜测章节、改写源标题或删除正文。Vision 无 OCR 文本匹配的标题必须继续保留给人审。
+4. OCR/PDF 项目先跑纯离线 `prepare`，再在人工章节审核前跑 `vision-structure`。EPUB 项目不要跑 Vision；`prepare` 应使用 `epub_markdown_v2` 本地抽取 spine 文本、章节、图片和封面，生成 `epub_import_report.json` 与 `source_review.md`。Vision 是补强证据：可以识别 TOC 页、目录层级和遗漏小节，但不得为了过门禁而猜测章节、改写源标题或删除正文。Vision 无 OCR 文本匹配的标题必须继续保留给人审。
 5. 章节结构稳定后，必须先生成并处理 `source_review.md` 门禁：主动询问用户是否要人工核对这份带页码的整理版原文。用户选择人工时运行 `source-review --mode manual`，给出文件路径并停止；只有用户明确说已核对完成，才能运行 `apply-source-review`。用户选择不人工核对时才运行 `source-review --mode auto` 并继续。
 6. 术语候选默认交给仓库的 `auto-glossary` 让 DeepSeek 自动完成 include/reject 与统一译名；不要让用户逐条审核普通术语。模型决定必须保留审计记录。只有 API/结构化输出持续失败或用户明确要求覆盖某个决定时，才退回人工术语复核。
 7. 翻译使用项目配置中的 contextual micro-batch，并按累计目标 `10 → 100 → 500 → all` 逐级进行。默认普通文本最多 4 targets/6000 字符共享上下文，高结构风险项 singleton，跨章节最多 4 workers。检查 preflight 的真实 batch 计划、失败记录和 usage；partial salvage 后只重试未通过 target。
-8. 封面默认用本仓库的本地排版生成器，不下载第三方美术素材。用户明确提供合法图片时，才用 `set-cover` 登记其权利与来源。
+8. OCR 默认使用本地排版封面；EPUB 默认优先复用源包 JPEG/PNG 封面，找不到才自动生成。不要为了适配某一本 EPUB 去修改翻译 prompt/加入 DOM token；优先修 importer，纯图片或正文抽取严重失败时改走 OCR。
 9. PDF/EPUB 导出依赖 Pandoc、XeLaTeX、中文字体和 EPUBCheck；新项目的 EPUB 必须校验通过。缺少依赖时仍须交付 Markdown，并准确报告未生成的格式。
 
 ## 第一步：推断书目信息
@@ -52,13 +52,16 @@ python3 new_book.py init \
 
 把命令输出的项目目录保存为 `<PROJECT_DIR>`。确认 `project.json`、`chapter_config.json`、`translation_config.json` 和空术语表存在。配置文件中只能出现 `DEEPSEEK_API_KEY` 这个环境变量名，不能出现 key 值。
 
-## 第三步：章节恢复、Vision 增强与结构审核
+## 第三步：输入标准化 / 章节恢复
 
 先建立纯离线 baseline：
 
 ```bash
 python3 new_book.py prepare --project "<PROJECT_DIR>"
 ```
+
+如果输入是 EPUB，检查 `project.json -> source_adapter` 必须为 `epub_markdown_v2`，并检查 `structure/epub_import_report.json`、`work/source_manifest.json`、`assets/epub/` 和 `cover/cover.json`。确认 `source_review.md` 中没有 `[[EPUB:...]]` token，正文顺序与主要章节没有明显缺失。EPUB 不进入下面的 Vision/structure-review 步骤；直接进入第四步 reviewed-source 审核。若 semantic importer 明显漏掉大量正文，优先修 importer 或改走 OCR，不要给翻译 prompt 加 EPUB-specific 规则。
+
 
 对 OCR/PDF 项目，确认 `DEEPSEEK_API_KEY` 已设置后，在人工审核前运行：
 
@@ -132,13 +135,9 @@ python3 new_book.py prepare --project "<PROJECT_DIR>"
 
 只有状态为 `ready_to_translate` 才能继续。
 
-## 第六步：生成封面
+## 第六步：确认封面
 
-```bash
-python3 new_book.py generate-cover --project "<PROJECT_DIR>" --theme auto
-```
-
-检查 `cover/cover.json` 与生成的 PNG：尺寸应为 1600×2400，`rights_status` 应为 `generated`，并包含 SHA-256、书名和作者证据。封面只使用元数据、字体与本地几何图形。
+OCR 项目如无登记封面，运行 `generate-cover`。EPUB 项目在 `prepare` 时已自动复用源 JPEG/PNG 封面；没有可复用封面才自动生成。检查 `cover/cover.json` 的 `selected_by`/`rights_status`/SHA-256，不要无故覆盖源 EPUB 封面。
 
 ## 第七步：预检与分级翻译
 
@@ -180,6 +179,6 @@ python3 new_book.py export --project "<PROJECT_DIR>" --format both
 
 ## 最终报告
 
-最终回复必须包含：项目目录、书目信息、Vision 证据、结构门禁结果、`source_review.md` 路径与人工/自动审核模式、approved source hash、术语结果、micro-batch 计划/实际请求数/平均 batch size、翻译完成率与 usage、QA、封面和最终产物。区分已经执行的结果和仅供参考的建议。
+最终回复必须包含：项目目录、输入 adapter；OCR 的 Vision/结构证据或 EPUB 的 import report/抽取资源/封面 provenance；`source_review.md` 审核模式与 hash；术语、micro-batch、usage、QA，以及标准化 Markdown/PDF/EPUB 产物。区分已经执行的结果和仅供参考的建议。
 
 ---

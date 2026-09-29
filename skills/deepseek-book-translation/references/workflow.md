@@ -2,7 +2,7 @@
 
 Run commands from `structured-book-translation-pipeline/`. Use absolute paths for user input and the project directory.
 
-## New book (OCR/PDF or native EPUB)
+## New book (OCR/PDF or EPUB)
 
 Inspect enough front matter and contents pages to infer the original title, a provisional Chinese title, author/editor when supported, source language, domain, `book_id`, and a reasonable `toc_search_end`. Keep the author empty when evidence is absent.
 
@@ -29,7 +29,7 @@ python3 new_book.py status --project '<PROJECT_DIR>'
 
 Do not re-run `init` for a non-empty existing project. Read its status and resume.
 
-For a native EPUB, use the package-preserving adapter instead of OCR:
+For an EPUB, do **not** route it through OCR or the legacy DOM-preserving adapter by default. New projects use the local canonical importer:
 
 ```bash
 python3 new_book.py init --input-epub '<SOURCE_EPUB>' \
@@ -40,12 +40,17 @@ python3 new_book.py prepare --project '<PROJECT_DIR>'
 python3 new_book.py status --project '<PROJECT_DIR>'
 ```
 
-Inspect the compatibility disposition first. The public native workflow currently
-proceeds only when the report is `COMPATIBLE_REFLOWABLE`. States such as
-`BLOCKED_ENCRYPTED_EPUB`, `NEEDS_OCR`,
-`NEEDS_USER_REVIEW_FIXED_LAYOUT`, or `NEEDS_COMPATIBILITY_REVIEW` fail
-closed; do not route the same EPUB through OCR/Pandoc merely to clear a native
-compatibility gate. Image-only books should explicitly switch to the OCR path.
+Expected adapter: `epub_markdown_v2`. Inspect:
+
+- `structure/epub_import_report.json`;
+- `work/source_manifest.json`;
+- `source_review.md`;
+- `assets/epub/`;
+- `cover/cover.json`.
+
+The importer keeps archive safety limits but tolerates common source-package/XHTML quirks and extracts reading-order semantics instead of preserving arbitrary DOM/CSS. It should not emit `[[EPUB:...]]` tokens. A source JPEG/PNG cover is reused automatically; otherwise a local typographic cover is generated. Local body images are copied into project assets.
+
+If the EPUB is image-only or semantic extraction clearly loses substantial text, report that and switch the book to the OCR path rather than modifying translation prompts for the package dialect. Existing projects explicitly marked `epub_native_v1` may resume the legacy adapter, but do not initialize new projects that way.
 
 ## Structure vision gate
 
@@ -69,7 +74,7 @@ Repeat only when new evidence-backed packets remain. Do not convert an uncertain
 
 ## Reviewed source gate
 
-After structure recovery/review is clear, rerun `prepare`. The pipeline now writes `source_review.md`: a readable reconstruction of the original book with Markdown heading hierarchy, source-page markers, conservative post-structure cross-page paragraph stitching, and hidden stable `BOOK_SEGMENT` markers.
+After structure recovery/review is clear, rerun `prepare`. OCR writes page markers and post-structure cross-page stitching; EPUB import writes `EPUB source: <spine href>` markers. Both produce the same `source_review.md` contract with Markdown heading hierarchy and hidden stable `BOOK_SEGMENT` markers.
 
 Before glossary or translation, ask the user whether they want to manually inspect/correct this file.
 
@@ -110,7 +115,10 @@ Do not ask the user to manually review ordinary terminology candidates. Use the 
 
 ## Cover, preflight, and contextual translation
 
+For OCR projects, generate a cover when needed. For `epub_markdown_v2`, `prepare` already reuses the source JPEG/PNG cover or generates a fallback automatically.
+
 ```bash
+# OCR only when no registered cover already exists:
 python3 new_book.py generate-cover --project '<PROJECT_DIR>' --theme auto
 python3 new_book.py preflight --project '<PROJECT_DIR>'
 python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 10
@@ -138,20 +146,16 @@ python3 new_book.py export --project '<PROJECT_DIR>' --format both
 
 Review `likely_error` findings against the source; a flag is not proof of an error. Use the QA retranslation path only for verified failures. New projects require EPUBCheck for a deliverable EPUB; discovery checks the configured path, `EPUBCHECK_JAR`, `epubcheck` on PATH, and common package-manager locations. PDF also requires Pandoc, XeLaTeX, and Chinese fonts. If dependencies are missing, deliver Markdown and report the missing formats accurately.
 
-For native EPUB publication, require complete current coverage plus unchanged
-package/resource/link/table/footnote structure. Protected `[[EPUB:...]]`
-tokens must remain in the same order and nesting; failed responses are retried
-with the structural error while preserving checkpoints. A provider timeout is
-resumable incomplete state, not a release pass. Finish native EPUB projects with:
+For `epub_markdown_v2`, publication is intentionally standardized rather than source-DOM-preserving:
 
 ```bash
 python3 new_book.py render --project '<PROJECT_DIR>'
-# equivalent explicit publication entry:
 python3 new_book.py export --project '<PROJECT_DIR>' --format epub
 ```
 
-The native adapter preserves the embedded cover and opaque resources and does
-not require Pandoc/XeLaTeX. EPUBCheck remains the formal publication gate.
+The translated Markdown is the publication source. Pandoc rebuilds EPUB3, using the registered source/fallback cover and extracted local images; EPUBCheck remains the formal delivery gate. Do not claim source CSS, fonts, scripts, complex links or interactive behavior were preserved unless independently verified.
+
+Existing `epub_native_v1` projects keep their legacy package-preserving publication contract for resume compatibility only.
 
 ## Existing local provider profile
 

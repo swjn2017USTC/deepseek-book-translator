@@ -1,6 +1,6 @@
 # DeepSeek Book Translator
 
-一个面向长篇书籍的可审计翻译工作台：OCR/PDF 路径用确定性规则、PDF bookmark/font evidence 与 DeepSeek Vision 联合恢复章节树，native EPUB 则直接保留原包结构翻译；经结构/兼容性与术语门禁后调用 DeepSeek 官方 API，支持断点续跑，并输出 Markdown、PDF 或原生回写后的 EPUB。
+一个面向长篇书籍的可审计翻译工作台：OCR/PDF 先恢复章节树，EPUB 先容错标准化为统一 reviewed-source Markdown/canonical segments；两类输入随后共享术语、contextual micro-batch 翻译、QA 与出版流程，并输出 Markdown、PDF 或标准化重建的 EPUB3。
 
 本仓库提供四种入口：
 
@@ -21,7 +21,7 @@
 
 - 从 PaddleOCR 页面数组恢复章节、标题层级、父子关系与稳定 ID；
 - 对 OCR/PDF 项目增加 DeepSeek Vision 结构增强：识别真正的目录页、抄录目录层级并用页码映射定位正文，同时扫描规则/PDF 字体 evidence 选出的正文嫌疑页，补出目录未列出的次级节；
-- 直接翻译 native EPUB：保留 OPF/spine/nav、DOM 层级、链接、脚注、表格、内嵌封面和非文本资源，只回写可翻译文本槽；
+- EPUB 默认先做 tolerant semantic import：按 spine 阅读顺序抽取标题、段落、列表、引用、脚注与本地图片到 canonical segments/Markdown，不再把源 DOM token 带进翻译 prompt；
 - 用验证报告和审核包阻止不可靠结构直接进入翻译；
 - 生成书籍术语候选，并默认由 DeepSeek 自动执行 include/reject、统一译名和低置信度二次复核；全部决定与 usage 可审计并绑定到翻译缓存；
 - 通过 `DEEPSEEK_API_KEY` 调用 DeepSeek 官方 Chat Completions API；
@@ -46,7 +46,7 @@ v0.9 起，章节恢复采用“多证据、单一树构建器”的方式，而
 
 ## Reviewed Source 与翻译效率
 
-v0.10 把“segment”与“API request”解耦。segment 仍是断点续跑、source hash、QA、EPUB DOM 回写和缓存失效的原子单位，但多个同章连续 segment 可以作为一个 wire micro-batch 请求。
+v0.10 把“segment”与“API request”解耦。segment 仍是断点续跑、source hash、QA、出版和缓存失效的原子单位，但多个同章连续 segment 可以作为一个 wire micro-batch 请求。v0.11 又把 EPUB 输入也统一到这套 canonical segment 模型。
 
 章节结构/Vision/人工结构门禁通过后，`prepare` 会先做保守跨页 paragraph 合并，再生成 `source_review.md`。文件包含可读的 Markdown 标题层级、`Source page(s)` 标记，以及不可删除/复制的隐藏 `BOOK_SEGMENT` 标记。此时流程必须选择：
 
@@ -143,69 +143,75 @@ python3 new_book.py export --project books/my-book --format both
 ```
 
 
-### 直接翻译 EPUB（保留原 EPUB 结构）
+### EPUB：先标准化为 reviewed-source Markdown，再重新出版
 
-如果手头已经有可重排（reflowable）的 EPUB，不需要先转成 PDF、截图或 OCR JSON。native EPUB 路径会直接读取 OCF/OPF、spine、导航与 XHTML，把正文和可翻译属性拆成稳定 segment，翻译后再写回原 DOM 槽位并重新打包。原始 EPUB 始终只读。
+v0.11 起，**新 EPUB 项目默认不再对源 XHTML/DOM/CSS 做原位回写**。原因很简单：不同来源 EPUB 的 OPF、XHTML、inline 标签、属性、脚注实现和 CSS 差异会不断渗透进解析器和翻译 prompt，维护成本高，而且会产生大量无意义 token。
 
-初始化时把 `--input-json` 换成 `--input-epub`：
+新的默认路径是：
+
+```text
+source EPUB
+  → safe ZIP + tolerant OPF/spine discovery
+  → tolerant HTML semantic extraction
+  → canonical segments + assets/epub/
+  → source_review.md
+  → 用户可选人工审核
+  → 共用 glossary + contextual micro-batch
+  → book_translated.md
+  → Pandoc EPUB3 rebuild + EPUBCheck
+```
+
+初始化方式不变：
 
 ```bash
-cd structured-book-translation-pipeline
 python3 new_book.py init \
   --input-epub /绝对路径/book.epub \
   --book-id my-epub-book \
   --book-title 'Original Title' \
   --book-title-zh '中文书名' \
-  --author 'Author Name' \
-  --source-lang '英语' \
-  --target-lang '简体中文'
+  --author 'Author Name'
 
 python3 new_book.py prepare --project books/my-epub-book
-python3 new_book.py status --project books/my-epub-book
 ```
 
-`prepare` 会先检查 ZIP/OCF、OPF manifest/spine、导航目标、内部链接、远程资源、脚本、fixed-layout、media overlay、加密状态等。当前正式翻译路径只接受 `COMPATIBLE_REFLOWABLE`；加密 EPUB、纯图片 EPUB、fixed-layout 或其他需要兼容性复核的包会 fail closed，并在 `structure/compatibility_report.json` 中说明原因。纯图片 EPUB 应先走 OCR 路径。
+新项目的 `source_adapter` 为 `epub_markdown_v2`。importer 保留 ZIP 路径/压缩炸弹等安全检查，但不再要求源 EPUB 的 `mimetype` 必须严格位于第一项且 STORE，也不要求正文 XHTML 必须是可无损 XML round-trip 的形式。正文使用 tolerant HTML 语义抽取，识别标准 `h1-h6`、paragraph/list/blockquote/caption/footnote，以及常见 class/id 形式的章节标题；格式很差但仍有 body text 时会保底抽出正文。纯图片书仍应走 OCR。
 
-EPUB 中的 inline 标签会被编译成内部保护令牌，例如 `[[EPUB:0:OPEN:em]]`。这些令牌不是正文，不要手工删除或修改；翻译器会逐次验证它们的身份、顺序、嵌套关系以及 URL、脚注、表格和 DOM slot 是否仍可无歧义回写。
+`prepare` 会写出：
 
-EPUB 也使用同一套自动术语门禁。`prepare` 返回 `needs_glossary_review` 时先自动审核，然后开始翻译：
+- `source_review.md`：统一、可人工检查的整理版原书；EPUB 用 `EPUB source: OPS/Text/ch03.xhtml` 标明原 spine 位置；
+- `structure/epub_import_report.json`：抽取统计与 warning；
+- `work/source_manifest.json`：源 EPUB hash、spine document、资源与 cover provenance；
+- `assets/epub/`：需要保留到成品里的本地正文图片。
+
+源 EPUB 的 JPEG/PNG 封面会优先自动复用并登记 provenance；如果找不到可复用封面，则自动生成现有的本地排版封面。正文图片会在最终 Markdown 中作为标准 Markdown image 重新嵌入 EPUB。
+
+接下来与 OCR 流程相同：
 
 ```bash
-export DEEPSEEK_API_KEY='你的 DeepSeek 官方 API key'
-python3 new_book.py auto-glossary --project books/my-epub-book
-python3 new_book.py prepare --project books/my-epub-book
+# 人工核对
+python3 new_book.py source-review --project books/my-epub-book --mode manual
+# 修改 source_review.md 后：
+python3 new_book.py apply-source-review --project books/my-epub-book
+
+# 或完全自动
+python3 new_book.py source-review --project books/my-epub-book --mode auto
+
 python3 new_book.py preflight --project books/my-epub-book
 python3 new_book.py translate --project books/my-epub-book --target-completed 10
-python3 new_book.py status --project books/my-epub-book
-
-# 小样确认后逐步扩大
-python3 new_book.py translate --project books/my-epub-book --target-completed 100
 python3 new_book.py translate --project books/my-epub-book --all
-```
-
-完成率达到 100% 后直接 native render：
-
-```bash
 python3 new_book.py render --project books/my-epub-book
+python3 new_book.py export --project books/my-epub-book --format epub
 ```
 
-正式结果写入：
+这里的取舍是明确的：**不保证 1:1 保留源 EPUB 的 CSS、DOM、字体、脚本、复杂链接和特殊交互效果；保证的是正文阅读顺序、章节语义、抽取出来的图片、封面和可审核的文本内容进入一个稳定、统一的出版流水线。** 对翻译书来说，这通常比维护任意 EPUB 方言的原位回写更可靠，也让翻译 prompt 与源 EPUB 实现彻底解耦。
 
-```text
-books/my-epub-book/exports/my-epub-book.zh-CN.epub
-```
-
-也可以使用 `python3 new_book.py export --project books/my-epub-book --format epub`。native EPUB 路径不会通过 Pandoc 重新生成一本新书，也不会生成 PDF；它会保留原包中的图片、字体、CSS、封面和其他 opaque resource。只有被记录为可翻译的 XHTML 文本/属性槽以及必要的中文标题、语言 metadata 会发生受控变更。
-
-正式 EPUB 交付默认要求 EPUBCheck。可把 `EPUBCHECK_JAR` 指向 EPUBCheck jar，或让 `epubcheck` 位于 PATH。**native EPUB 翻译本身不需要 Pandoc 或 XeLaTeX**；这两项只用于 OCR/Markdown 路径的 PDF/EPUB 出版。
-
-native EPUB 输入现已同时通过 CLI、Coding Agent、Agent Skill 和 Windows EXE 暴露。Windows GUI 的同一个输入框可直接选择 `.json` 或 `.epub`；EPUB 会走 package/DOM-preserving 路径，不经过 OCR/Pandoc 重建。
+旧项目如果已经使用 `epub_native_v1`，仍保留 legacy DOM-preserving 路径以便断点续跑；但新项目和 Skill 不再默认选择它。
 
 ## 方式二：Coding Agent
 
 打开 [CODING_AGENT_PROMPT.md](CODING_AGENT_PROMPT.md)，把开头的 `<BOOK_INPUT_ABSOLUTE_PATH>` 替换成 OCR JSON 或 reflowable EPUB 的绝对路径；OCR 项目若有对应 PDF，也让 agent 使用它做 Vision 结构增强。然后把整段提示词交给能够访问本仓库和终端的 coding agent。
 
-Agent 会先从书名页、版权页和目录推断书名、作者、语言、领域及 `book_id`，再依次执行：初始化、离线章节恢复、DeepSeek Vision 结构增强、人工结构审核、LLM 自动术语审核、本地封面生成、零网络预检、分级翻译、QA、渲染与导出。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
+Agent 会先从输入证据推断书名、作者、语言、领域及 `book_id`。OCR/PDF 执行章节恢复 + Vision；EPUB 则先本地标准化为 reviewed-source Markdown、抽取图片并复用/生成封面；随后两者共享 source-review 门禁、自动术语、零网络预检、micro-batch 翻译、QA 与出版。证据不足的章节结构必须留给用户；普通术语候选默认由 `auto-glossary` 自动 include/reject 和给出译名。
 
 启动 agent 前应在 agent 进程能够继承的终端设置 `DEEPSEEK_API_KEY`。不要把 key 粘贴给 agent，也不要写进提示词或配置文件。
 

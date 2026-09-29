@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import zipfile
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -87,6 +88,29 @@ def _sample_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "examples" / "sample_ocr.json"  # type: ignore[attr-defined]
     return Path(__file__).resolve().parents[2] / "examples" / "sample_ocr.json"
+
+
+def _write_messy_epub(path: Path) -> Path:
+    """Build a noncanonical-but-readable EPUB for frozen importer smoke."""
+    container = """<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"""
+    package = """<package version="3.0"><metadata><dc:title>Smoke EPUB</dc:title>
+<meta name="cover" content="cover"/></metadata><manifest>
+<item id="cover" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+<item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
+</manifest><spine><itemref idref="ch1"/></spine></package>"""
+    chapter = """<html><head><title>Smoke Chapter</title></head><body>
+<h1>Smoke Chapter</h1><p>Hello <em>messy EPUB.</p><p>Second paragraph.</p>
+</body></html>"""
+    with zipfile.ZipFile(path, "w") as archive:
+        # Deliberately violate the strict OCF mimetype placement/compression rule.
+        archive.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("OPS/package.opf", package, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("OPS/Text/ch1.xhtml", chapter, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("OPS/Images/cover.jpg", b"\xff\xd8\xffFROZEN-SMOKE-COVER", compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_DEFLATED)
+    return path
 
 
 def run_offline_smoke() -> dict[str, Any]:
@@ -174,6 +198,34 @@ def run_offline_smoke() -> dict[str, Any]:
                     raise
             else:
                 raise AssertionError("Synthetic translations reached the publish path")
+
+            # Frozen EPUB smoke: a deliberately noncanonical package must still
+            # normalize locally into reviewed Markdown with source cover reuse.
+            epub_source = _write_messy_epub(temporary_path / "messy-source.epub")
+            epub_project = temporary_path / "epub-book"
+            initialized_epub = initialize_project(
+                input_epub=epub_source,
+                book_id="synthetic-epub",
+                book_title="Smoke EPUB",
+                book_title_zh="合成 EPUB",
+                author="Demo",
+                project_dir=epub_project,
+            )
+            if initialized_epub["source_adapter"] != "epub_markdown_v2":
+                raise AssertionError("New EPUB project did not select canonical adapter")
+            prepared_epub = prepare_project(epub_project)
+            if prepared_epub.get("status") != "needs_source_review_choice":
+                raise AssertionError(f"Unexpected EPUB gate: {prepared_epub.get('status')}")
+            epub_review = (epub_project / "source_review.md").read_text(encoding="utf-8")
+            if (
+                "EPUB source: OPS/Text/ch1.xhtml" not in epub_review
+                or "Hello messy EPUB." not in epub_review
+                or "[[EPUB:" in epub_review
+            ):
+                raise AssertionError("Canonical EPUB reviewed-source output is invalid")
+            epub_cover = json.loads((epub_project / "cover" / "cover.json").read_text(encoding="utf-8"))
+            if epub_cover.get("selected_by") != "source_epub":
+                raise AssertionError("Source EPUB cover was not reused")
             return {
                 "status": "ok", "sample_pages": len(sample_pages),
                 "vision_structure_collected": True,
@@ -191,6 +243,8 @@ def run_offline_smoke() -> dict[str, Any]:
                 "markdown_rendered": True, "fake_export_blocked": True,
                 "gui_review_constructed": os.name == "nt",
                 "pdf_epub_generated": False,
+                "epub_canonical_imported": True,
+                "epub_source_cover_reused": True,
             }
     finally:
         if previous_key is None:

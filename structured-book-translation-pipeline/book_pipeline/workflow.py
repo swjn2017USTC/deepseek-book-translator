@@ -17,7 +17,7 @@ from .cover_generator import generate_typographic_cover
 from .io_utils import read_jsonl, write_json, write_jsonl
 from .models import Segment
 from .provenance import write_clean_manifest
-from .epub import inspect_epub, render_epub, segment_epub
+from .epub import inspect_epub, normalize_epub, render_epub, segment_epub, validate_epub_source
 from .epub.tokens import strip_tokens
 from .glossary import compile_glossary_decisions, generate_glossary, require_ready_glossary
 from .glossary_llm import auto_review_glossary
@@ -78,16 +78,23 @@ def _validate_ocr_path(path: Path) -> None:
 def _validate_epub_path(path: Path) -> None:
     if not path.is_file():
         raise FileNotFoundError(path)
-    # Native inspection validates ZIP/OCF/package safety without modifying the source.
-    inspect_epub(path)
+    # New EPUB projects use a tolerant canonical importer. It preserves ZIP
+    # safety checks while avoiding strict source-DOM/OCF conformance as a
+    # prerequisite for translation.
+    validate_epub_source(path)
 
 
 def _is_epub_project(project: Dict[str, Any]) -> bool:
-    return str(project.get("source_adapter") or "") == "epub_native_v1"
+    return str(project.get("source_adapter") or "") in {"epub_native_v1", "epub_markdown_v2"}
 
 
 def _is_epub_config(config: Dict[str, Any]) -> bool:
-    return str(config.get("source_adapter") or "") == "epub_native_v1" or bool(config.get("input_epub"))
+    """Return True only for the legacy DOM-preserving EPUB renderer.
+
+    New epub_markdown_v2 projects intentionally render/export through the
+    generic Markdown publisher.
+    """
+    return str(config.get("source_adapter") or "") == "epub_native_v1"
 
 
 def initialize_project(
@@ -114,7 +121,7 @@ def initialize_project(
     if thinking_mode not in {"disabled", "low", "high", "max"}:
         raise ValueError("thinking_mode must be one of: disabled, low, high, max")
 
-    source_adapter = "epub_native_v1" if input_epub is not None else "ocr_json_v1"
+    source_adapter = "epub_markdown_v2" if input_epub is not None else "ocr_json_v1"
     input_path = (input_epub if input_epub is not None else input_json).expanduser().resolve()
     if input_epub is not None:
         _validate_epub_path(input_path)
@@ -176,13 +183,13 @@ def initialize_project(
         write_json(structure_dir / "book_structure.json", {
             "schema_version": 1,
             "book_id": book_id,
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
             "nodes": [],
         })
         write_json(structure_dir / "validation.json", {
             "schema_version": 1,
             "ok": False,
-            "adapter": "epub_native_v1",
+            "adapter": "epub_markdown_v2",
             "status": "not_prepared",
         })
         write_jsonl(structure_dir / "review_packets.jsonl", [])
@@ -296,42 +303,41 @@ def initialize_project(
 
     script = "new_book.py"
     if input_epub is not None:
-        runbook = f"""# {book_title_zh}：Native EPUB 翻译运行说明
+        runbook = f"""# {book_title_zh}：EPUB 标准化翻译运行说明
 
-1. 检查 EPUB 包并生成原生分段、兼容性报告和上下文结构（不会调用模型）：
+1. 把源 EPUB 容错抽取成统一的 canonical segments / Markdown（不会调用模型）：
 
    `python3 {script} prepare --project {project_path}`
 
-   只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；兼容后会生成 `source_review.md` 并停在原文审核选择门禁。
+   新项目使用 `epub_markdown_v2`。程序只把源 EPUB 当作输入容器：按 spine 阅读顺序抽取标题、段落、列表、引用、脚注和图片，输出 `source_review.md` 与 `structure/epub_import_report.json`。不会要求源 XHTML/CSS 可以原位回写，也不会把 DOM token 发给翻译模型。
+
+   原 EPUB 的 JPEG/PNG 封面会自动复用；正文本地图片会抽到 `assets/epub/`。没有可复用封面时自动生成本地排版封面。
 
 2. 选择是否人工核对整理后的原文 Markdown。若要人工核对：
 
    `python3 {script} source-review --project {project_path} --mode manual`
 
-   打开 `{project_path / 'source_review.md'}`。可修改可见原文和 Markdown 标题层级，但不要删除或复制 `BOOK_SEGMENT` 注释。完成后运行：
+   打开 `{project_path / 'source_review.md'}`。其中会用 `EPUB source: ...` 标出原 spine 文件位置。可修改可见原文和 Markdown 标题层级，但不要删除或复制 `BOOK_SEGMENT` 注释。完成后运行：
 
    `python3 {script} apply-source-review --project {project_path}`
 
-   若不需要人工核对，直接：
+   若不需要人工核对：
 
    `python3 {script} source-review --project {project_path} --mode auto`
 
-   两条批准路径都会继续自动术语审核。
-
-3. 做零网络预检，再按累计目标翻译：
+3. 做零网络预检并用与 OCR 相同的 contextual micro-batch 翻译：
 
    `python3 {script} preflight --project {project_path}`
    `python3 {script} translate --project {project_path} --target-completed 10`
    `python3 {script} translate --project {project_path} --target-completed 100`
    `python3 {script} translate --project {project_path} --all`
 
-   默认 contextual micro-batch 对普通连续文本最多每次 4 段/6000 字符，高结构风险片段保持 singleton；不同章节最多 4 lanes 并行。失败批次会保留已通过片段，只递归重试未通过项。
-
-4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
+4. 完成率 100% 后先渲染统一 Markdown，再重新出版一个干净的 EPUB3：
 
    `python3 {script} render --project {project_path}`
+   `python3 {script} export --project {project_path} --format epub`
 
-   正式结果写入 `{project_path / 'exports' / (book_id + '.zh-CN.epub')}`。
+   输出 EPUB 是标准化重建版本，而不是对源 EPUB 的 DOM/CSS 原位 patch。它保留抽取出来的正文图片和已注册封面，并用 EPUBCheck 做最终验证。
 """
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
@@ -580,7 +586,7 @@ def _ready_after_source_review(
     return result
 
 
-def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
+def _prepare_legacy_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     config = _translation_config(project)
     project_dir = Path(project["project_dir"]).expanduser().resolve()
 
@@ -659,10 +665,108 @@ def _prepare_epub_project(project: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _prepare_epub_markdown_project(project: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize any supported EPUB into the common reviewed-Markdown pipeline."""
+    config = _translation_config(project)
+    project_dir = Path(project["project_dir"]).expanduser().resolve()
+
+    existing_gate = _source_review_gate_result(project, config)
+    if existing_gate is not None:
+        if existing_gate.get("status") == "approved":
+            result = _ready_after_source_review(project, config)
+            write_json(project_dir / "workflow_status.json", result)
+            return result
+        write_json(project_dir / "workflow_status.json", existing_gate)
+        return existing_gate
+
+    source = resolve_path(config, "input_epub")
+    structure_dir = Path(project["structure_dir"]).expanduser().resolve()
+    work_dir = resolve_path(config, "output_dir")
+    structure_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized = normalize_epub(
+        source,
+        str(config["book_id"]),
+        project_dir,
+    )
+    segments = list(normalized["segments"])
+    structure_path = structure_dir / "book_structure.json"
+    validation_path = structure_dir / "validation.json"
+    review_path = structure_dir / "review_packets.jsonl"
+    segments_path = work_dir / "cleaned_segments.jsonl"
+    report_path = work_dir / "cleaning_report.json"
+
+    write_json(structure_path, normalized["structure"])
+    write_json(validation_path, {
+        "schema_version": 1,
+        "ok": True,
+        "adapter": "epub_markdown_v2",
+        "status": "normalized",
+        "checks": [
+            "safe_zip",
+            "package_and_spine_discovery",
+            "tolerant_semantic_html_extraction",
+            "local_asset_extraction",
+            "canonical_segment_generation",
+        ],
+        "warnings": list(normalized.get("warnings") or []),
+    })
+    write_jsonl(review_path, [])
+    config = _set_translation_structure(project, structure_path)
+
+    write_jsonl(segments_path, [segment.to_dict() for segment in segments])
+    write_json(report_path, normalized["cleaning_report"])
+    write_json(work_dir / "source_manifest.json", normalized["source_manifest"])
+    write_json(structure_dir / "epub_import_report.json", {
+        "schema_version": 1,
+        "book_id": config["book_id"],
+        "adapter": "epub_markdown_v2",
+        "source": str(source),
+        "metrics": normalized["cleaning_report"].get("metrics"),
+        "warnings": list(normalized.get("warnings") or []),
+        "cover_asset": normalized.get("cover_asset"),
+        "source_manifest": str(work_dir / "source_manifest.json"),
+    })
+    write_clean_manifest(config, segments_path, report_path)
+
+    cover_manifest = project_dir / "cover" / "cover.json"
+    cover: Optional[Dict[str, Any]] = None
+    if not cover_manifest.is_file():
+        cover_asset = str(normalized.get("cover_asset") or "")
+        cover_path = project_dir / cover_asset if cover_asset else None
+        if cover_path is not None and cover_path.is_file() and cover_path.suffix.casefold() in {".jpg", ".jpeg", ".png"}:
+            cover = register_cover(
+                project_dir,
+                cover_path,
+                rights_status="user_approved_personal_use",
+                selected_by="source_epub",
+                edition_evidence=(
+                    "Cover extracted from the user-supplied source EPUB and reused "
+                    "for the rebuilt translated EPUB."
+                ),
+            )
+        else:
+            cover = generate_typographic_cover(project_dir, theme="auto")
+    else:
+        cover = json.loads(cover_manifest.read_text(encoding="utf-8"))
+
+    result = _new_source_review_gate(project, config, normalized["cleaning_report"]["metrics"])
+    result["source_adapter"] = "epub_markdown_v2"
+    result["epub_import_report"] = str(structure_dir / "epub_import_report.json")
+    result["import_warnings"] = list(normalized.get("warnings") or [])
+    result["cover"] = cover
+    write_json(project_dir / "workflow_status.json", result)
+    return result
+
+
 def prepare_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
-    if _is_epub_project(project):
-        return _prepare_epub_project(project)
+    adapter = str(project.get("source_adapter") or "")
+    if adapter == "epub_native_v1":
+        return _prepare_legacy_epub_project(project)
+    if adapter == "epub_markdown_v2":
+        return _prepare_epub_markdown_project(project)
 
     _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
     structure_dir = Path(project["structure_dir"])
@@ -1138,7 +1242,7 @@ def export_project(project_path: Path, output_format: str = "both") -> Dict[str,
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare and translate an OCR JSON or native EPUB book safely")
+    parser = argparse.ArgumentParser(description="Prepare and translate an OCR JSON/PDF or normalized EPUB book safely")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="create a self-contained new-book project")
     source = init.add_mutually_exclusive_group(required=True)
