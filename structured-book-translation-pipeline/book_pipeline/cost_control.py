@@ -91,6 +91,7 @@ def _usage_rows(path: Path) -> Iterable[Dict[str, Any]]:
 def usage_totals(path: Path) -> Dict[str, Any]:
     prompt = completion = hit = miss = reasoning = requests = 0
     parse_attempts = usage_records = segment_references = failed_records = 0
+    micro_batch_records = fallback_records = accepted_references = 0
     unique_segment_ids = set()
     completed_segment_ids = set()
     failed_segment_ids = set()
@@ -129,7 +130,17 @@ def usage_totals(path: Path) -> Dict[str, Any]:
         segment_ids = [str(value) for value in (row.get("segment_ids") or [])]
         segment_references += len(segment_ids)
         unique_segment_ids.update(segment_ids)
-        if row.get("status") == "failed_validation":
+        accepted = row.get("accepted_segment_ids")
+        retry = [str(value) for value in (row.get("retry_segment_ids") or [])]
+        if isinstance(accepted, list):
+            accepted_ids = [str(value) for value in accepted]
+            accepted_references += len(accepted_ids)
+            completed_segment_ids.update(accepted_ids)
+            if row.get("target_count") is not None:
+                micro_batch_records += 1
+            if row.get("status") in {"batch_parse_fallback", "partial_batch"} or retry:
+                fallback_records += 1
+        elif row.get("status") == "failed_validation":
             failed_records += 1
             failed_segment_ids.update(segment_ids)
         else:
@@ -144,6 +155,10 @@ def usage_totals(path: Path) -> Dict[str, Any]:
         "completed_segment_ids": len(completed_segment_ids),
         "failed_segment_ids": len(failed_segment_ids),
         "usage_records": usage_records,
+        "micro_batch_records": micro_batch_records,
+        "micro_batch_fallback_records": fallback_records,
+        "accepted_segment_references": accepted_references,
+        "average_target_references_per_request": round(segment_references / requests, 4) if requests else None,
         "failed_validation_records": failed_records,
         "models": sorted(models),
         "api_completion_requests": requests,
