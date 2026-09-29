@@ -393,6 +393,8 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
         "translation_file": str(prepared["progress_path"]),
         "usage_file": str(prepared["usage_path"]),
         "cost": cost,
+        "micro_batch": dict((config.get("translation") or {}).get("micro_batch") or {}),
+        "planned_micro_batches": prepared.get("planned_micro_batches"),
     }
 
 
@@ -882,6 +884,7 @@ def translate_v2(
     report["error_segment_count"] = len(error_segments)
     report["error_segment_ids"] = error_segments
     report["max_workers"] = max_workers
+    report["planned_micro_batches"] = prepared.get("planned_micro_batches")
     _write_status_file(prepared)
     return report
 
