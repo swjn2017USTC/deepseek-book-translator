@@ -214,6 +214,22 @@ class ContextualFakeClient:
         payload = json.loads(user)
         if payload.get("probe") is not None:
             return json.dumps({"ok": True}), {"prompt_tokens": 1, "completion_tokens": 1}
+        if payload.get("targets") is not None:
+            targets = payload["targets"]
+            if self.mode == "not-json":
+                content = "not json at all"
+            elif self.mode == "leak":
+                content = json.dumps({
+                    "t": [[row["n"], "译：" + row["text"]] for row in targets]
+                         + [[999, "译：leaked context"]]
+                }, ensure_ascii=False)
+            elif self.mode == "missing-id":
+                content = json.dumps({"t": [["bad", "译：missing index"]]}, ensure_ascii=False)
+            else:
+                content = json.dumps({
+                    "t": [[row["n"], "译：" + row["text"]] for row in targets]
+                }, ensure_ascii=False)
+            return content, {"prompt_tokens": 10, "completion_tokens": 20}
         target = payload["target"]
         if self.mode == "leak":
             content = json.dumps(
