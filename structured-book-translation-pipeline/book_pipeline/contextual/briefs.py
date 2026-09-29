@@ -206,15 +206,16 @@ def build_chapter_briefs(
 
 
 def brief_payload(brief: ChapterBrief) -> Dict[str, Any]:
-    """§12.2 prompt-facing chapter_brief (page range key ``pages``)."""
+    """Prompt-facing semantic chapter context only.
+
+    Hashes/counts/page ranges remain in provenance/cache metadata and are not
+    useful translation context, so omitting them avoids repeated prompt tokens.
+    """
     return {
         "title_source": brief.title_source,
         "kind": brief.kind,
         "zone": brief.zone,
-        "pages": [brief.page_range[0], brief.page_range[1]],
         "section_titles": list(brief.section_titles),
-        "segment_count": brief.segment_count,
-        "brief_hash": brief.brief_hash,
     }
 
 
