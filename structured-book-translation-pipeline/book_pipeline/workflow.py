@@ -303,42 +303,41 @@ def initialize_project(
 
     script = "new_book.py"
     if input_epub is not None:
-        runbook = f"""# {book_title_zh}：Native EPUB 翻译运行说明
+        runbook = f"""# {book_title_zh}：EPUB 标准化翻译运行说明
 
-1. 检查 EPUB 包并生成原生分段、兼容性报告和上下文结构（不会调用模型）：
+1. 把源 EPUB 容错抽取成统一的 canonical segments / Markdown（不会调用模型）：
 
    `python3 {script} prepare --project {project_path}`
 
-   只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；兼容后会生成 `source_review.md` 并停在原文审核选择门禁。
+   新项目使用 `epub_markdown_v2`。程序只把源 EPUB 当作输入容器：按 spine 阅读顺序抽取标题、段落、列表、引用、脚注和图片，输出 `source_review.md` 与 `structure/epub_import_report.json`。不会要求源 XHTML/CSS 可以原位回写，也不会把 DOM token 发给翻译模型。
+
+   原 EPUB 的 JPEG/PNG 封面会自动复用；正文本地图片会抽到 `assets/epub/`。没有可复用封面时自动生成本地排版封面。
 
 2. 选择是否人工核对整理后的原文 Markdown。若要人工核对：
 
    `python3 {script} source-review --project {project_path} --mode manual`
 
-   打开 `{project_path / 'source_review.md'}`。可修改可见原文和 Markdown 标题层级，但不要删除或复制 `BOOK_SEGMENT` 注释。完成后运行：
+   打开 `{project_path / 'source_review.md'}`。其中会用 `EPUB source: ...` 标出原 spine 文件位置。可修改可见原文和 Markdown 标题层级，但不要删除或复制 `BOOK_SEGMENT` 注释。完成后运行：
 
    `python3 {script} apply-source-review --project {project_path}`
 
-   若不需要人工核对，直接：
+   若不需要人工核对：
 
    `python3 {script} source-review --project {project_path} --mode auto`
 
-   两条批准路径都会继续自动术语审核。
-
-3. 做零网络预检，再按累计目标翻译：
+3. 做零网络预检并用与 OCR 相同的 contextual micro-batch 翻译：
 
    `python3 {script} preflight --project {project_path}`
    `python3 {script} translate --project {project_path} --target-completed 10`
    `python3 {script} translate --project {project_path} --target-completed 100`
    `python3 {script} translate --project {project_path} --all`
 
-   默认 contextual micro-batch 对普通连续文本最多每次 4 段/6000 字符，高结构风险片段保持 singleton；不同章节最多 4 lanes 并行。失败批次会保留已通过片段，只递归重试未通过项。
-
-4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
+4. 完成率 100% 后先渲染统一 Markdown，再重新出版一个干净的 EPUB3：
 
    `python3 {script} render --project {project_path}`
+   `python3 {script} export --project {project_path} --format epub`
 
-   正式结果写入 `{project_path / 'exports' / (book_id + '.zh-CN.epub')}`。
+   输出 EPUB 是标准化重建版本，而不是对源 EPUB 的 DOM/CSS 原位 patch。它保留抽取出来的正文图片和已注册封面，并用 EPUBCheck 做最终验证。
 """
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
