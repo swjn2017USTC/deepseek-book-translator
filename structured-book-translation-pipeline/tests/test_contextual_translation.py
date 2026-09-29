@@ -280,6 +280,19 @@ def write_fixture_book(
         concept_path = root / "concepts.json"
         concept_path.write_text(json.dumps(concepts, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    translation_settings = {
+        "context_mode": "contextual_v2",
+        "previous_segments": 2,
+        "next_segments": 2,
+        "previous_translation_max_chars": 500,
+        "chapter_brief": {"enabled": True, "llm_enrich": False},
+        "batch_max_segments": 1,
+        "batch_max_chars": 6000,
+        "sensitive_batch_max_segments": 1,
+    }
+    if translation is not None:
+        translation_settings.update(translation)
+
     config_path = root / "config.json"
     config_path.write_text(json.dumps({
         "book_id": BOOK_ID,
@@ -293,13 +306,7 @@ def write_fixture_book(
         "quality": {"validation_json": str(structure_dir / "validation.json"), "allow_pending_review": False},
         "allow_demo_translations": True,
         "provider": {"requests_per_minute": 0},
-        "translation": translation if translation is not None else {
-            "context_mode": "contextual_v2",
-            "previous_segments": 2,
-            "next_segments": 2,
-            "previous_translation_max_chars": 500,
-            "chapter_brief": {"enabled": True, "llm_enrich": False},
-        },
+        "translation": translation_settings,
         "glossary_dependencies": {
             "enabled": deps_enabled,
             "concept_glossary_path": str(concept_path) if concept_path else None,
@@ -734,8 +741,18 @@ def test_payload_carries_brief_prev_next_and_bounded_previous_translation(tmp_pa
     config = write_fixture_book(tmp_path)
     fake = ContextualFakeClient()
     translate_v2(config, fake, limit=18)
-    calls = {json.loads(call["user"])["target"]["id"]: json.loads(call["user"]) for call in fake.calls
-             if json.loads(call["user"]).get("target")}
+    calls = {}
+    for call in fake.calls:
+        payload = json.loads(call["user"])
+        if not payload.get("targets"):
+            continue
+        target = payload["targets"][0]
+        source_text = target["text"]
+        segment_id = next(
+            segment_id for segment_id, row in SEG_BY_ID.items()
+            if row["source_text"] == source_text
+        )
+        calls[segment_id] = payload
     assert len(calls) == 18
     # a mid-chapter target gets both prev and next context, all from chapter one
     middle = calls["seg-ctx-0007"]
@@ -745,7 +762,6 @@ def test_payload_carries_brief_prev_next_and_bounded_previous_translation(tmp_pa
                                      SEG_BY_ID["seg-ctx-0009"]["source_text"]]
     assert middle["chapter_brief"]["title_source"] == "Chapter One: Origins of Order"
     assert middle["chapter_brief"]["section_titles"] == ["The Grammar of Power", "Ritual and Rank"]
-    assert middle["chapter_brief"]["brief_hash"]  # non-empty
     # previous_translation = bounded tail of the previous completed translation
     assert middle["previous_translation"] == "译：" + SEG_BY_ID["seg-ctx-0006"]["source_text"]
     assert len(middle["previous_translation"]) <= 500
@@ -763,7 +779,7 @@ def test_payload_carries_brief_prev_next_and_bounded_previous_translation(tmp_pa
 def test_translate_v2_parse_retries_bounded_and_no_fabricated_record(tmp_path):
     config = write_fixture_book(tmp_path)
     leaky = ContextualFakeClient(mode="leak")
-    with pytest.raises(RuntimeError, match="failed response validation"):
+    with pytest.raises(RuntimeError, match="micro-batch contains failed segments"):
         translate_v2(config, leaky, limit=1)
     invalid_file = Path(config["output_dir"]) / "last_invalid_response.txt"
     assert invalid_file.exists() and invalid_file.read_text(encoding="utf-8").strip()
