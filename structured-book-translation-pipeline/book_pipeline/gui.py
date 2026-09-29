@@ -180,7 +180,7 @@ class TranslatorGUI:
         self.log.configure(yscrollcommand=scrollbar.set)
         outer.rowconfigure(15, weight=1)
         self.root.after(100, self._drain_events)
-        self._write("选择 OCR JSON 或 EPUB。结构/Vision 完成后会生成带页码的 source_review.md，并询问是否人工核对；人工修改会重新导入为 canonical source，之后再进行 micro-batch 翻译。\n")
+        self._write("选择 OCR JSON 或 EPUB。OCR 会做章节/Vision；EPUB 会先容错抽取为统一 canonical Markdown、复用图片/封面。随后都进入 source_review.md 人工可选审核，再用同一 micro-batch 翻译与标准化出版流程。\n")
 
     def open_review(self, kind: str) -> None:
         from tkinter import messagebox
@@ -287,7 +287,7 @@ class TranslatorGUI:
         manifest = json.loads((project / "project.json").read_text(encoding="utf-8"))
         vision = None
         if (
-            manifest.get("source_adapter") != "epub_native_v1"
+            manifest.get("source_adapter") == "ocr_json_v1"
             and not (project / "structure" / "vision_structure.json").is_file()
         ):
             self._api_environment()
