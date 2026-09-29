@@ -157,6 +157,8 @@ def require_approved_source(config: Dict[str, Any], project_dir: Path) -> Dict[s
     if not state or state.get("status") != "approved":
         raise RuntimeError("Reviewed source Markdown is not approved; resolve the source-review gate before translation")
     paths = _paths(config, project_dir)
+    if file_sha256(paths["markdown"]) != state.get("markdown_sha256"):
+        raise RuntimeError("source_review.md changed after approval; apply the reviewed Markdown again")
     if file_sha256(paths["segments"]) != state.get("segments_sha256"):
         raise RuntimeError("Approved source segments changed; re-apply or re-approve source_review.md")
     return state
