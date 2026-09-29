@@ -930,8 +930,11 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
             for segment in segments
             if segment.translatable or segment.source_text.strip()
         }
+        preflight_settings = dict(config.get("translation") or {})
+        if "micro_batch" not in preflight_settings:
+            preflight_settings["micro_batch"] = {"enabled": False}
         batches = build_micro_batches(
-            segments, pending, chapter_of, dict(config.get("translation") or {})
+            segments, pending, chapter_of, preflight_settings
         )
         estimated_requests = len(batches)
         estimated_targets_per_request = (
