@@ -1132,6 +1132,18 @@ def build_parser() -> argparse.ArgumentParser:
     compile_command = commands.add_parser("compile-reviews")
     compile_command.add_argument("--project", type=Path, required=True)
     compile_command.add_argument("--decisions", type=Path, required=True)
+    source_review = commands.add_parser(
+        "source-review",
+        help="choose whether the generated reviewed-source Markdown requires manual confirmation",
+    )
+    source_review.add_argument("--project", type=Path, required=True)
+    source_review.add_argument("--mode", choices=("manual", "auto"), required=True)
+    apply_review = commands.add_parser(
+        "apply-source-review",
+        help="import the edited source_review.md as canonical translation input",
+    )
+    apply_review.add_argument("--project", type=Path, required=True)
+    apply_review.add_argument("--file", type=Path)
     glossary = commands.add_parser("glossary", help="generate the master subset and candidate review packets")
     glossary.add_argument("--project", type=Path, required=True)
     glossary.add_argument("--force", action="store_true")
@@ -1190,6 +1202,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         result = vision_enhance_project(args.project, args.pdf)
     elif args.command == "compile-reviews":
         result = compile_reviews(args.project, args.decisions)
+    elif args.command == "source-review":
+        result = choose_project_source_review(args.project, args.mode)
+    elif args.command == "apply-source-review":
+        result = apply_project_source_review(args.project, args.file)
     elif args.command == "glossary":
         result = generate_project_glossary(args.project, args.force)
     elif args.command == "compile-glossary":
