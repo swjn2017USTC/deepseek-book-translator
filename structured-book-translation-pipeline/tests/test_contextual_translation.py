@@ -1066,3 +1066,58 @@ def test_url_token_stops_at_cjk_punctuation():
     import pytest as _pt
     with _pt.raises(ValueError, match="Structural token mismatch"):
         _verify_structural_tokens(seg, "无链接译文。")
+
+
+
+def test_microbatch_partial_salvage_retries_only_missing_target(tmp_path):
+    config = write_fixture_book(tmp_path, translation={
+        "batch_max_segments": 4,
+        "batch_max_chars": 6000,
+        "sensitive_batch_max_segments": 1,
+        "max_workers": 1,
+        "skip_failed_segments": False,
+    })
+
+    class PartialOnceClient(ContextualFakeClient):
+        def __init__(self):
+            super().__init__()
+            self.partial_done = False
+
+        def complete(self, system, user):
+            payload = json.loads(user)
+            if payload.get("probe") is not None:
+                return super().complete(system, user)
+            targets = payload["targets"]
+            if len(targets) > 1 and not self.partial_done:
+                self.partial_done = True
+                self.calls.append({"system": system, "user": user})
+                rows = [
+                    [row["n"], "译：" + row["text"]]
+                    for row in targets
+                    if row["n"] != 1
+                ]
+                return json.dumps({"t": rows}, ensure_ascii=False), {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                }
+            return super().complete(system, user)
+
+    client = PartialOnceClient()
+    report = translate_v2(config, client)
+
+    assert report["remaining_segments"] == 0
+    assert report["completed_segments"] == 18
+    assert report["micro_batch_plan"]["segments"] == 18
+    assert report["micro_batch_plan"]["average_batch_size"] > 1
+    # 18 singleton calls are the old baseline; batching plus one targeted
+    # fallback must remain far below that.
+    assert len(client.calls) < 10
+
+    usage_rows = list(read_jsonl(Path(config["output_dir"]) / "usage.jsonl"))
+    total_requests = sum(int((row.get("usage") or {}).get("request_count") or 0) for row in usage_rows)
+    assert total_requests == len(client.calls)
+    assert any(int((row.get("usage") or {}).get("request_count") or 0) > 1 for row in usage_rows)
+    latest = {}
+    for row in read_jsonl(Path(config["output_dir"]) / "translations.jsonl"):
+        latest[row["segment_id"]] = row
+    assert len(latest) == 18
