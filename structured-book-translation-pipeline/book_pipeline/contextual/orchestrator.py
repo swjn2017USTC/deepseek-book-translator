@@ -606,15 +606,15 @@ def _translate_batch_item(
     _commit_microbatch(prepared, targets, outcome)
     failed = outcome["failures"]
     if failed:
+        if not prepared["settings"].get("skip_failed_segments"):
+            raise RuntimeError(
+                "micro-batch contains failed segments: " + ", ".join(sorted(failed))
+            )
         for segment in targets:
             if segment.id not in failed:
                 continue
             error_segments.append(segment.id)
             _record_failed_segment(prepared, segment, RuntimeError(failed[segment.id]))
-        if not prepared["settings"].get("skip_failed_segments"):
-            raise RuntimeError(
-                "micro-batch contains failed segments: " + ", ".join(sorted(failed))
-            )
     return len(outcome["records"])
 
 
