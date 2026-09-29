@@ -37,11 +37,13 @@ def _paths(config: Dict[str, Any], project_dir: Path) -> Dict[str, Path]:
     }
 
 
-def _fingerprint(config: Dict[str, Any]) -> Dict[str, str]:
+def _fingerprint(config: Dict[str, Any], project_dir: Path) -> Dict[str, str]:
     source = resolve_path(config, source_input_key(config))
     structure = resolve_path(config, "structure_json")
+    baseline = project_dir / "structure" / "book_structure.json"
     return {
         "source_sha256": file_sha256(source),
+        "baseline_structure_sha256": file_sha256(baseline) if baseline.is_file() else file_sha256(structure),
         "structure_sha256": file_sha256(structure),
     }
 
@@ -115,7 +117,7 @@ def render_source_review(config: Dict[str, Any], project_dir: Path) -> Dict[str,
         lines.append("")
     markdown = "\n".join(lines).rstrip() + "\n"
     paths["markdown"].write_text(markdown, encoding="utf-8")
-    fp = _fingerprint(config)
+    fp = _fingerprint(config, project_dir)
     state = {
         "schema_version": 1,
         "book_id": config["book_id"],
@@ -138,8 +140,12 @@ def source_review_state(config: Dict[str, Any], project_dir: Path) -> Optional[D
         state = json.loads(paths["state"].read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    fp = _fingerprint(config)
-    if state.get("source_sha256") != fp["source_sha256"] or state.get("structure_sha256") != fp["structure_sha256"]:
+    fp = _fingerprint(config, project_dir)
+    if (
+        state.get("source_sha256") != fp["source_sha256"]
+        or state.get("baseline_structure_sha256") != fp["baseline_structure_sha256"]
+        or state.get("structure_sha256") != fp["structure_sha256"]
+    ):
         return None
     if not paths["markdown"].is_file() or not paths["segments"].is_file():
         return None
@@ -267,8 +273,18 @@ def apply_source_review(
 
     structure = json.loads(paths["structure"].read_text(encoding="utf-8"))
     _update_reviewed_structure(structure, reviewed)
-    write_json(paths["structure"], structure)
+    reviewed_structure = resolve_path(config, "output_dir") / "reviewed_structure.json"
+    write_json(reviewed_structure, structure)
     write_jsonl(paths["segments"], [segment.to_dict() for segment in reviewed])
+
+    # Translation uses the reviewed tree; the chapter analyzer keeps owning the
+    # baseline structure file so a future baseline change invalidates this gate.
+    config_path = Path(str(config["_config_path"])).expanduser().resolve()
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["structure_json"] = str(reviewed_structure)
+    write_json(config_path, raw_config)
+    config["structure_json"] = str(reviewed_structure)
+    paths = _paths(config, project_dir)
 
     # Rebind cleaning provenance to the manually reviewed canonical source.
     write_clean_manifest(config, paths["segments"], paths["report"])
@@ -279,7 +295,7 @@ def apply_source_review(
         "book_id": config["book_id"],
         "status": "approved",
         "review_mode": "manual",
-        **_fingerprint(config),
+        **_fingerprint(config, project_dir),
         "markdown": str(paths["markdown"]),
         "markdown_sha256": file_sha256(paths["markdown"]),
         "segments_sha256": file_sha256(paths["segments"]),
