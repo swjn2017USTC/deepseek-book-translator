@@ -643,14 +643,17 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     if _is_epub_project(project):
         return _prepare_epub_project(project)
+
     _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
     review_path = structure_dir / "review_packets.jsonl"
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
     pending = _nonempty_lines(review_path)
+    project_dir = Path(project["project_dir"]).expanduser().resolve()
+
     if not validation.get("ok") or pending:
-        template = Path(project["project_dir"]) / "structure_decisions.template.jsonl"
+        template = project_dir / "structure_decisions.template.jsonl"
         _write_decision_template(review_path, template)
         result = {
             "schema_version": 1,
@@ -662,23 +665,30 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
             "decision_template": str(template),
             "translation_started": False,
         }
-    else:
-        config = _translation_config(project)
-        cleaning = clean_book(config)
-        glossary = generate_glossary(config)
-        status = translation_status(config)
-        result = {
-            "schema_version": 1,
-            "book_id": project["book_id"],
-            "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
-            "validation_ok": True,
-            "pending_structure_reviews": 0,
-            "cleaning_metrics": cleaning["metrics"],
-            "translation": status,
-            "glossary": glossary,
-            "translation_started": False,
-        }
-    write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        write_json(project_dir / "workflow_status.json", result)
+        return result
+
+    config = _translation_config(project)
+    try:
+        existing_gate = _source_review_gate_result(project, config)
+    except RuntimeError:
+        existing_gate = None
+    if existing_gate is not None:
+        if existing_gate.get("status") == "approved":
+            result = _ready_after_source_review(project, config)
+        else:
+            result = existing_gate
+        write_json(project_dir / "workflow_status.json", result)
+        return result
+
+    # No current review artifact: return translation input to the latest
+    # deterministic/Vision-reviewed baseline before cleaning and generating a
+    # fresh human-readable source Markdown.
+    baseline_structure = structure_dir / "book_structure.json"
+    config = _set_translation_structure(project, baseline_structure)
+    cleaning = clean_book(config)
+    result = _new_source_review_gate(project, config, cleaning["metrics"])
+    write_json(project_dir / "workflow_status.json", result)
     return result
 
 
