@@ -1,4 +1,4 @@
 interface:
   display_name: "DeepSeek Book Translation"
   short_description: "Translate OCR/PDF or EPUB with Vision-audited structure"
-  default_prompt: "Use $deepseek-book-translation to translate my OCR JSON/PDF or EPUB into Chinese. For OCR projects, run deterministic chapter recovery plus DeepSeek Vision before human structure review; resolve terminology automatically afterward."
+  default_prompt: "Use $deepseek-book-translation to translate my OCR JSON/PDF or EPUB into Chinese. Recover structure first, then ask whether I want to manually review the generated paginated source_review.md; use the approved reviewed source for contextual micro-batch translation and automate terminology afterward."
