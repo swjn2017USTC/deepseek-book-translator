@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Dict, Sequence, Tuple
 
 from ..models import Segment
 from ..epub.translation import validate_epub_translation
@@ -76,6 +76,80 @@ def parse_target_only(content: str, target: Segment) -> str:
     validate_epub_translation(target, text)
     return text
 
+
+
+
+def parse_batch_partial(
+    content: str,
+    targets: Sequence[Segment],
+) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """Parse a compact micro-batch response and salvage independently valid rows.
+
+    Container corruption raises so the caller can binary-split the request.
+    Once JSON is valid, every target is checked independently and valid siblings
+    can be committed even if one row loses a structural token.
+    """
+    cleaned = content.strip()
+    fence = chr(96) * 3
+    if cleaned.startswith(fence):
+        cleaned = re.sub(
+            r"^" + re.escape(fence) + r"(?:json)?\s*|\s*" + re.escape(fence) + r"$",
+            "",
+            cleaned,
+            flags=re.I,
+        )
+    if "DSML" in cleaned:
+        cleaned = _TOOL_MARKUP.sub("", cleaned).strip()
+    data = json.loads(cleaned)
+    rows: Any = None
+    if isinstance(data, dict) and isinstance(data.get("t"), list):
+        rows = data["t"]
+    elif isinstance(data, dict) and isinstance(data.get("translations"), list):
+        rows = data["translations"]
+    elif isinstance(data, list):
+        rows = data
+    if not isinstance(rows, list):
+        raise ValueError("Micro-batch response must contain a t/translations array")
+
+    raw: Dict[int, str] = {}
+    for row in rows:
+        index: Any = None
+        text: Any = None
+        if isinstance(row, list) and len(row) == 2:
+            index, text = row
+        elif isinstance(row, dict):
+            index = row.get("n")
+            text = (
+                row.get("translated_text")
+                if row.get("translated_text") is not None
+                else row.get("translation")
+                if row.get("translation") is not None
+                else row.get("text")
+            )
+        try:
+            number = int(index)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid micro-batch target index: {index!r}")
+        if number < 0 or number >= len(targets):
+            raise ValueError(f"Unexpected micro-batch target index: {number}")
+        if number in raw:
+            raise ValueError(f"Duplicate micro-batch target index: {number}")
+        raw[number] = str(text or "")
+
+    valid: Dict[int, str] = {}
+    errors: Dict[int, str] = {}
+    for index, target in enumerate(targets):
+        text = raw.get(index, "")
+        if not text.strip():
+            errors[index] = "missing_or_empty"
+            continue
+        try:
+            checked = _verify_structural_tokens(target, text)
+            validate_epub_translation(target, checked)
+            valid[index] = checked
+        except (ValueError, KeyError) as exc:
+            errors[index] = f"{type(exc).__name__}: {exc}"
+    return valid, errors
 
 def _items(data: Any) -> Any:
     """Normalize accepted shapes to a list of items.
