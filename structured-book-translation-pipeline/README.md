@@ -10,7 +10,7 @@ python3 new_book.py generate-cover --project books/my-book --theme auto
 python3 ../deepseek_book_translator_gui.py
 ```
 
-默认使用 `DEEPSEEK_API_KEY`、`https://api.deepseek.com/chat/completions`、`deepseek-flash` 和 Bearer 鉴权。OCR/PDF 项目可运行 `python3 new_book.py vision-structure --project <PROJECT>`；Vision 模型可用 `DEEPSEEK_VISION_MODEL` 单独覆盖。密钥不会写入项目。章节结构审核保持人工门禁；结构通过后默认运行 `python3 new_book.py auto-glossary --project <PROJECT>`，让 DeepSeek 自动完成术语 include/reject 与统一译名，并写出可审计记录。完整 CLI、Coding Agent 和 Windows EXE 文档见仓库根目录 README。
+默认使用 `DEEPSEEK_API_KEY`、`https://api.deepseek.com/chat/completions`、`deepseek-flash` 和 Bearer 鉴权。OCR/PDF 项目可运行 `python3 new_book.py vision-structure --project <PROJECT>`；Vision 模型可用 `DEEPSEEK_VISION_MODEL` 单独覆盖。密钥不会写入项目。章节结构审核保持人工门禁；结构稳定后先生成带页码的 `source_review.md`，让用户选择人工核对或自动批准。批准版本成为 canonical source，之后术语自动审核并使用同章 contextual micro-batch（默认最多 4 targets/6000 字符）翻译。完整 CLI、Coding Agent 和 Windows EXE 文档见仓库根目录 README。
 # Native EPUB structural layer
 
 The public pipeline now includes the same fail-closed native EPUB structural
