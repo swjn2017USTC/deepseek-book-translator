@@ -781,11 +781,16 @@ def choose_project_source_review(project_path: Path, mode: str) -> Dict[str, Any
         }
     else:
         prepared = prepare_project(project_path)
+        glossary_review = None
+        if prepared.get("status") == "needs_glossary_review":
+            glossary_review = auto_review_project_glossary(project_path)
+            prepared = prepare_project(project_path)
         result = {
             "schema_version": 1,
             "book_id": project["book_id"],
             "status": prepared.get("status"),
             "source_review": state,
+            "llm_glossary_review": glossary_review,
             "prepared": prepared,
         }
     write_json(Path(project["project_dir"]) / "workflow_status.json", result)
@@ -804,11 +809,16 @@ def apply_project_source_review(
         markdown_path,
     )
     prepared = prepare_project(project_path)
+    glossary_review = None
+    if prepared.get("status") == "needs_glossary_review":
+        glossary_review = auto_review_project_glossary(project_path)
+        prepared = prepare_project(project_path)
     result = {
         "schema_version": 1,
         "book_id": project["book_id"],
         "status": prepared.get("status"),
         "source_review": state,
+        "llm_glossary_review": glossary_review,
         "prepared": prepared,
     }
     write_json(Path(project["project_dir"]) / "workflow_status.json", result)
