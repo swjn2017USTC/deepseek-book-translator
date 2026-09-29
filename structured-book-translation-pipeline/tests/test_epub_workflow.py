@@ -10,7 +10,7 @@ from book_pipeline.io_utils import read_jsonl
 from book_pipeline.workflow import initialize_project, prepare_project, project_status
 
 
-def _messy_epub(path: Path) -> Path:
+def _messy_epub(path: Path, *, with_cover: bool = True) -> Path:
     """A deliberately noncanonical but safely readable EPUB.
 
     - mimetype is compressed and not the first ZIP entry
@@ -21,14 +21,16 @@ def _messy_epub(path: Path) -> Path:
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles>
 </container>"""
-    package = """<package version="3.0">
+    cover_meta = '<meta name="cover" content="cover-image"/>' if with_cover else ""
+    cover_item = '<item id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>' if with_cover else ""
+    package = f"""<package version="3.0">
   <metadata>
     <dc:title>Messy EPUB</dc:title>
     <dc:creator>Test Author</dc:creator>
-    <meta name="cover" content="cover-image"/>
+    {cover_meta}
   </metadata>
   <manifest>
-    <item id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+    {cover_item}
     <item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="fig1" href="Images/figure.png" media-type="image/png"/>
   </manifest>
@@ -46,14 +48,15 @@ def _messy_epub(path: Path) -> Path:
         archive.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("OPS/package.opf", package, compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("OPS/Text/ch1.xhtml", chapter, compress_type=zipfile.ZIP_DEFLATED)
-        archive.writestr("OPS/Images/cover.jpg", b"\xff\xd8\xffSOURCE-COVER", compress_type=zipfile.ZIP_DEFLATED)
+        if with_cover:
+            archive.writestr("OPS/Images/cover.jpg", b"\xff\xd8\xffSOURCE-COVER", compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("OPS/Images/figure.png", b"\x89PNG\r\n\x1a\nFIGURE", compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_DEFLATED)
     return path
 
 
-def _init(tmp_path: Path) -> Path:
-    source = _messy_epub(tmp_path / "source.epub")
+def _init(tmp_path: Path, *, with_cover: bool = True) -> Path:
+    source = _messy_epub(tmp_path / "source.epub", with_cover=with_cover)
     project = tmp_path / "project"
     initialize_project(
         input_epub=source,
@@ -117,6 +120,19 @@ def test_epub_import_tolerates_noncanonical_mimetype_and_reuses_source_cover(tmp
     assert Path(cover["image_path"]).is_file()
     assert prepared["cover"]["sha256"] == cover["sha256"]
 
+
+
+def test_epub_without_reusable_cover_generates_local_fallback(tmp_path):
+    project = _init(tmp_path, with_cover=False)
+    prepared = prepare_project(project)
+
+    source_manifest = json.loads((project / "work" / "source_manifest.json").read_text(encoding="utf-8"))
+    assert source_manifest["cover_asset"] is None
+    cover = json.loads((project / "cover" / "cover.json").read_text(encoding="utf-8"))
+    assert cover["selected_by"] == "local_generator"
+    assert cover["rights_status"] == "generated"
+    assert Path(cover["image_path"]).is_file()
+    assert prepared["cover"]["sha256"] == cover["sha256"]
 
 def test_canonical_epub_render_and_export_use_common_markdown_publisher(tmp_path, monkeypatch):
     project = _init(tmp_path)
