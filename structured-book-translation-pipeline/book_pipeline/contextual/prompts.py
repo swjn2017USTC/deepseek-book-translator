@@ -14,12 +14,12 @@ from typing import Any, Dict, List
 
 from ..models import Segment
 
-PROMPTS_VERSION = 1  # stamps every v2 prompt payload, usage row and record.
+PROMPTS_VERSION = 2  # stamps every v2 prompt payload, usage row and record.
 
 # Verbatim clause asserted by tests and asserted verbatim in the system prompt.
 CONTEXT_ONLY_CLAUSE = (
-    "previous/next/previous_translation 只用于理解上下文；只输出 target 的译文；"
-    "不要翻译、不要输出任何 previous/next 或 context 片段的 id。"
+    "previous/next/previous_translation 只用于理解上下文；只输出 targets 的译文；"
+    "不要翻译、不要输出任何 previous/next 或 context 片段。"
 )
 
 
@@ -32,12 +32,12 @@ def system_prompt(config: Dict[str, Any]) -> str:
         "规则：\n"
         "1. chapter_brief、previous_source、next_source、previous_translation 是理解语境、指代、术语与文风的辅助上下文，全部来自同一章。\n"
         f"2. {CONTEXT_ONLY_CLAUSE}\n"
-        "3. 不增删、概括或解释；保留论证、限定、引文、数字和专名。只翻译 target 的 text 字段。\n"
+        "3. 不增删、概括或解释；保留论证、限定、引文、数字和专名。只翻译 targets 中每个 text 字段。\n"
         "4. 严格使用提供的 glossary 条目；专名首次出现可用“译名（原文）”，同一段再次出现只用译名。\n"
         "5. 参考文献、书目和脚注中的书名与文章标题也必须翻译为目标语言；不可因其属于书目而整句原样复制。作者名、期刊名、出版社名、URL、DOI 和书目信息保留可核对的原文形式。\n"
         "6. 保留全部脚注引用、HTML 注释、公式、URL、表格分隔符以及 [[EPUB:...]] 令牌；所有结构令牌必须逐字节原样复制，不得改写、重排、包裹为 Markdown 链接或添加标点。\n"
         "7. 不添加 Markdown 标题井号、页码、前言或说明。\n"
-        '8. 只返回严格 JSON 对象：{"id": "<target 的 id>", "translated_text": "<target 的译文>"}；id 必须与输入的 target.id 完全一致，响应中不得出现任何其他片段 id。'
+        '8. 只返回严格 JSON 对象：{"t":[[0,"译文"],[1,"译文"]]}。每个局部 n 恰好返回一次，顺序可不同；不要返回稳定 segment id、上下文文本或解释。'
     )
 
 
@@ -45,26 +45,21 @@ def build_payload(
     *,
     chapter_brief: Dict[str, Any],
     previous_source: List[str],
-    target: Segment,
+    targets: List[Segment],
     next_source: List[str],
     previous_translation: str,
     glossary: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Build the §12.2 single-target payload.
-
-    Context segments (previous/next source and the chapter brief) never appear
-    under any output field; ``required_output`` names exactly one id — the
-    target's — so a compliant model response can only reference the target.
-    """
+    """Build a compact multi-target payload with stable-prefix fields first."""
     return {
         "chapter_brief": dict(chapter_brief),
         "previous_source": [str(text) for text in previous_source],
-        "target": {"id": target.id, "kind": target.kind, "text": target.source_text},
+        "targets": [
+            {"n": index, "kind": target.kind, "text": target.source_text}
+            for index, target in enumerate(targets)
+        ],
         "next_source": [str(text) for text in next_source],
         "previous_translation": previous_translation,
         "glossary": [dict(entry) for entry in glossary],
-        "required_output": {
-            "id": target.id,
-            "translated_text": "translation of the target text only",
-        },
+        "required_output": {"t": [[0, "translation for target n=0"]]},
     }
