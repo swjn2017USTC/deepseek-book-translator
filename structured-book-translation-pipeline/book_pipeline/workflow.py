@@ -328,6 +328,10 @@ def initialize_project(
    `python3 {script} translate --project {project_path} --target-completed 100`
    `python3 {script} translate --project {project_path} --all`
 
+   新项目默认使用同文档/同上下文的 micro-batch：普通连续文本最多 4 个 target / 6000 字符共用一次请求，
+   不跨章节或已完成 checkpoint；table cell、attribute、结构令牌密集段会自动降为 singleton，
+   局部验证失败只重试失败 target。默认最多 4 个章节 lane 并发，不再人为固定 20 RPM。
+
 4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
 
    `python3 {script} render --project {project_path}`
@@ -338,7 +342,11 @@ def initialize_project(
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
 
-1. 先做一次纯离线章节恢复和清理：
+本项目的结构化原文确认模式：`{source_confirmation}`。
+- `manual`：章节恢复完成后生成 `source/structured_source.md` 并停住，等待人工核对/修补后显式确认。
+- `auto`：仍生成同一个带页码结构化原文，但自动确认并继续后续门禁。
+
+1. 先做一次纯离线章节恢复：
 
    `python3 {script} prepare --project {project_path}`
 
@@ -346,42 +354,62 @@ def initialize_project(
 
    `python3 {script} vision-structure --project {project_path}`
 
-   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；没有同名 PDF 时退回 OCR JSON 的 `inputImage`。也可以显式指定：
+   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；也可显式指定：
    `python3 {script} vision-structure --project {project_path} --pdf /path/to/source.pdf`
 
-   Vision 会识别目录页、抄录目录层级，并扫描 OCR/PDF 规则筛出的正文嫌疑页以补充目录未列出的次级节。结果保存在 `structure/vision_structure.json`，并绑定 OCR SHA-256。
+   Vision 会识别目录页、目录层级和正文遗漏小节，但只是证据源；无 OCR 文本匹配的 Vision 标题仍需人工复核。
 
-3. 若增强后仍为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
+3. 若状态仍为 `needs_structure_review`，人工完成结构裁决并重新 prepare：
 
    `python3 {script} compile-reviews --project {project_path} --decisions {project_path / 'structure_decisions.jsonl'}`
+   `python3 {script} prepare --project {project_path}`
 
-   然后重新执行 prepare。Vision 无 OCR 文本匹配的标题会保持低置信度等待人工复核，不得为了过门禁直接批准。
+4. 章节门禁通过后，程序会做第二遍保守跨页正文合并，并生成：
 
-4. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
+   `{project_path / 'source' / 'structured_source.md'}`
+
+   文件带 1-based OCR/PDF 页码或跨页范围，并用隐藏 DBT:SEG 锚点绑定稳定 segment。
+   可以修改标题文字、Markdown 标题层级和正文，但不要删除或修改 DBT:SEG 锚点。
+
+   如果模式是 `manual`，此时状态为 `needs_source_confirmation`。核对并保存后运行：
+
+   `python3 {script} confirm-source --project {project_path}`
+
+   只有确认后的 Markdown 才是术语分析、chapter context 和翻译的 source of truth。
+   确认后再次修改该文件会自动重新锁住翻译，必须再次 confirm-source。
+   如果不希望人工停顿，可切换为全自动：
+   `python3 {script} set-source-confirmation --project {project_path} --mode auto`
+
+5. 若状态为 `needs_glossary_review`，让 DeepSeek 自动审核全部术语候选：
 
    `python3 {script} auto-glossary --project {project_path}`
+   `python3 {script} prepare --project {project_path}`
 
-   LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
-
-5. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
+6. 零网络预检会按真实 micro-batch 计划估算剩余请求数：
 
    `python3 {script} preflight --project {project_path}`
 
-6. 建议先累计翻译 10 个片段，再逐步扩大：
+   新项目默认普通同章连续文本最多 4 target / 6000 字符共享一次请求；表格和高风险结构自动降级。
+   返回的 `estimated_targets_per_request` 可以直接观察实际合批程度。
+
+7. 建议先累计翻译 10 个 segment，再逐步扩大：
 
    `python3 {script} translate --project {project_path} --target-completed 10`
+   `python3 {script} translate --project {project_path} --target-completed 100`
+   `python3 {script} translate --project {project_path} --all`
 
-   断点续跑时把累计目标改为 100、500 等。确认后整本运行使用显式 `--all`。
+   API 返回中每个 target 仍逐 segment 校验和持久化；一个 batch 内的有效译文会立即保存，
+   单个 target 失败只重试该 target，整体 JSON 损坏则自动二分 fallback。默认最多 4 个章节 lane 并发。
 
-7. 完成率达到 100% 后渲染：
+8. 完成率 100% 后渲染：
 
    `python3 {script} render --project {project_path}`
 
-8. 用本地排版生成器创建并登记封面：
+9. 用本地排版生成器创建并登记封面：
 
    `python3 {script} generate-cover --project {project_path} --theme auto`
 
-9. 生成带目录的 PDF 和带封面的 EPUB：
+10. 生成 PDF 和 EPUB：
 
    `python3 {script} export --project {project_path} --format both`
 """
