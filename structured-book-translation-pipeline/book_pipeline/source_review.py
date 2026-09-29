@@ -22,7 +22,7 @@ from .provenance import file_sha256, write_clean_manifest
 
 SEGMENT_MARKER = re.compile(r"^<!-- BOOK_SEGMENT (\{.*\}) -->\s*$")
 PAGE_MARKER = re.compile(r"^<!-- SOURCE_PAGE .* -->\s*$")
-VISIBLE_PAGE = re.compile(r"^> \*\*\[Source page(?:s)?: .*\]\*\*\s*$")
+VISIBLE_PAGE = re.compile(r"^> \*\*\[(?:Source page(?:s)?|EPUB source): .*\]\*\*\s*$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
@@ -95,18 +95,28 @@ def render_source_review(config: Dict[str, Any], project_dir: Path) -> Dict[str,
         "-->",
         "",
     ]
-    last_page: Optional[Tuple[Optional[int], Optional[int]]] = None
+    last_location: Optional[Tuple[Optional[int], Optional[int], str]] = None
     for segment in segments:
-        span = (segment.page_json, _page_end(segment))
-        if span != last_page:
+        metadata = segment.metadata or {}
+        href = str(metadata.get("href") or "")
+        span = (segment.page_json, _page_end(segment), href if segment.page_json is None else "")
+        if span != last_location:
             lines.append(
                 "<!-- SOURCE_PAGE "
-                + json.dumps({"page_json": span[0], "page_end": span[1]}, ensure_ascii=False, separators=(",", ":"))
+                + json.dumps(
+                    {"page_json": span[0], "page_end": span[1], "href": href or None},
+                    ensure_ascii=False, separators=(",", ":")
+                )
                 + " -->"
             )
-            lines.append(f"> **[Source page{'s' if span[1] != span[0] else ''}: {_page_label(segment)}]**")
+            if segment.page_json is None and href:
+                lines.append(f"> **[EPUB source: {href}]**")
+            else:
+                lines.append(
+                    f"> **[Source page{'s' if span[1] != span[0] else ''}: {_page_label(segment)}]**"
+                )
             lines.append("")
-            last_page = span
+            last_location = span
         lines.append(_marker(segment))
         text = segment.source_text.strip()
         if segment.kind == "heading":
