@@ -816,6 +816,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
     validation_ok = bool(validation.get("ok"))
     pending = _nonempty_lines(review_path)
     config = _translation_config(project)
+    source_gate = source_status(config)
     output_dir = resolve_path(config, "output_dir")
     cleaned = (output_dir / "cleaned_segments.jsonl").exists()
     fresh = False
@@ -856,6 +857,8 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         status = "blocked_epub_compatibility"
     elif not validation_ok or pending:
         status = "needs_structure_review"
+    elif source_gate.get("applicable") and source_gate.get("status") != "confirmed":
+        status = "needs_source_confirmation"
     elif not cleaned or not fresh:
         status = "needs_prepare"
     elif not glossary_ready:
@@ -889,6 +892,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "translation": translation,
         "cost": cost,
         "vision_structure": vision,
+        "source_manuscript": source_gate,
     }
 
 
@@ -896,6 +900,7 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     glossary_sha256 = require_ready_glossary(config)
     cache_sha256 = glossary_sha256 if config.get("glossary_settings", {}).get("bind_translation_cache", False) else ""
@@ -941,6 +946,7 @@ def translate_project(project_path: Path, target_completed: Optional[int], all_s
         raise ValueError("Choose an explicit --target-completed value or --all")
     project = _project_manifest(project_path)
     config = _translation_config(project)
+    require_source_confirmation(config)
     target = None if all_segments else target_completed
     if (config.get("translation") or {}).get("context_mode") == "contextual_v2":
         from .contextual import translate_v2
@@ -1024,6 +1030,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--author", default="")
     init.add_argument("--toc-search-end", type=int, default=30)
     init.add_argument("--thinking-mode", choices=("disabled", "low", "high", "max"), default="disabled")
+    init.add_argument(
+        "--source-confirmation", choices=("manual", "auto"), default="manual",
+        help="manual waits for review of source/structured_source.md; auto continues unattended",
+    )
     for name in ("prepare", "status", "preflight", "render"):
         command = commands.add_parser(name)
         command.add_argument("--project", type=Path, required=True)
@@ -1035,6 +1045,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vision.add_argument("--project", type=Path, required=True)
     vision.add_argument("--pdf", type=Path)
+    confirm_source = commands.add_parser(
+        "confirm-source",
+        help="accept edits in source/structured_source.md and make it the translation source of truth",
+    )
+    confirm_source.add_argument("--project", type=Path, required=True)
+    source_mode = commands.add_parser(
+        "set-source-confirmation",
+        help="switch OCR source confirmation between manual and auto",
+    )
+    source_mode.add_argument("--project", type=Path, required=True)
+    source_mode.add_argument("--mode", choices=("manual", "auto"), required=True)
     compile_command = commands.add_parser("compile-reviews")
     compile_command.add_argument("--project", type=Path, required=True)
     compile_command.add_argument("--decisions", type=Path, required=True)
@@ -1089,11 +1110,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             target_lang=args.target_lang, domain=args.domain, author=args.author,
             toc_search_end=args.toc_search_end,
             thinking_mode=args.thinking_mode,
+            source_confirmation=args.source_confirmation,
         )
     elif args.command == "prepare":
         result = prepare_project(args.project)
     elif args.command == "vision-structure":
         result = vision_enhance_project(args.project, args.pdf)
+    elif args.command == "confirm-source":
+        result = confirm_source_project(args.project)
+    elif args.command == "set-source-confirmation":
+        result = set_source_confirmation_mode(args.project, args.mode)
     elif args.command == "compile-reviews":
         result = compile_reviews(args.project, args.decisions)
     elif args.command == "glossary":
