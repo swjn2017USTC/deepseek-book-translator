@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import queue
 import subprocess
+import sys
 import threading
 from typing import Any, Callable, Dict
 
