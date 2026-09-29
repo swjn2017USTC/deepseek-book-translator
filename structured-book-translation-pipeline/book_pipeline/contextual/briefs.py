@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..io_utils import write_json
 from ..models import Segment
+from .prompts import PROMPTS_VERSION
 
 
 @dataclass
@@ -244,7 +245,7 @@ def write_chapter_briefs(
     document = {
         "schema_version": 1,
         "book_id": book_id,
-        "prompts_version": 1,
+        "prompts_version": PROMPTS_VERSION,
         "briefs": rows,
     }
     path = Path(output_dir) / "chapter_briefs.json"
