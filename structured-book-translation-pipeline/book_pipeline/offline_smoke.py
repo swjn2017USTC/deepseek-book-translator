@@ -13,7 +13,8 @@ from .config import load_config
 from .io_utils import read_jsonl, write_json, write_jsonl
 from .review_gui import ReviewWindow
 from .render import render_book
-from .translate import translate_book
+from .contextual import translate_v2
+from .source_review import choose_source_review
 from .workflow import (
     auto_review_project_glossary, export_project, generate_project_cover,
     initialize_project, preflight_project, prepare_project, vision_enhance_project,
@@ -25,8 +26,10 @@ class SyntheticClient:
 
     def complete(self, _system: str, user: str) -> tuple[str, dict[str, int]]:
         payload = json.loads(user)
-        rows = [{"id": row["id"], "translated_text": "译：" + row["text"]} for row in payload["segments"]]
-        return json.dumps(rows, ensure_ascii=False), {"prompt_tokens": 0, "completion_tokens": 0}
+        rows = [[row["n"], "译：" + row["text"]] for row in payload["targets"]]
+        return json.dumps({"t": rows}, ensure_ascii=False), {
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        }
 
 
 class SyntheticStructureVisionClient:
@@ -113,8 +116,16 @@ def run_offline_smoke() -> dict[str, Any]:
             prepared = prepare_project(project)
             vision = vision_enhance_project(project, client=SyntheticStructureVisionClient())
             prepared = vision["prepared"]
-            if prepared["status"] != "needs_glossary_review":
+            if prepared["status"] != "needs_source_review_choice":
                 raise AssertionError(f"Unexpected first gate: {prepared['status']}")
+            source_review_path = project / "source_review.md"
+            if not source_review_path.is_file() or "BOOK_SEGMENT" not in source_review_path.read_text(encoding="utf-8"):
+                raise AssertionError("Reviewed-source Markdown was not generated")
+            config_path = project / "translation_config.json"
+            choose_source_review(load_config(config_path), project, "auto")
+            prepared = prepare_project(project)
+            if prepared["status"] != "needs_glossary_review":
+                raise AssertionError(f"Source-review gate did not clear: {prepared['status']}")
             candidates = list(read_jsonl(project / "glossary_candidates.jsonl"))
             if not candidates:
                 raise AssertionError("Synthetic sample must exercise the glossary review gate")
@@ -142,13 +153,12 @@ def run_offline_smoke() -> dict[str, Any]:
                 root.update_idletasks()
                 review_window.window.destroy()
                 root.destroy()
-            config_path = project / "translation_config.json"
             config = json.loads(config_path.read_text(encoding="utf-8"))
             config["allow_demo_translations"] = True
             config["provider"]["requests_per_minute"] = 0
             write_json(config_path, config)
             loaded = load_config(config_path)
-            translated = translate_book(loaded, SyntheticClient())
+            translated = translate_v2(loaded, SyntheticClient())
             if not translated["ready_to_render"]:
                 raise AssertionError("Synthetic translation did not finish")
             rendered = render_book(loaded)
@@ -170,8 +180,11 @@ def run_offline_smoke() -> dict[str, Any]:
                 "vision_pdf_rendered": bool(
                     ((json.loads((project / "structure" / "vision_structure.json").read_text(encoding="utf-8")).get("scan") or {}).get("image_sources") or {}).get("pdf_render")
                 ),
+                "source_review_generated": True,
+                "source_review_mode": "auto",
                 "glossary_candidates_reviewed": len(candidates),
                 "glossary_review_mode": "llm_auto",
+                "micro_batch_plan": translated.get("micro_batch_plan"),
                 "review_status": compiled["status"],
                 "cover_generated": True, "preflight_requests": 0,
                 "translated_segments": translated["completed_segments"],
