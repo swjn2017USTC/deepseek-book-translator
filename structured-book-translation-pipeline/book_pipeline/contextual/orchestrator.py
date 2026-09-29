@@ -558,6 +558,7 @@ def _translate_micro_batch(
     error_segments: List[str],
     pacer: Optional[Any] = None,
     depth: int = 0,
+    singleton_attempt: int = 1,
 ) -> int:
     if not batch:
         return 0
@@ -605,10 +606,19 @@ def _translate_micro_batch(
             retry=[segment.id for segment in batch], depth=depth,
         )
         if len(batch) == 1:
-            _pace(prepared, pacer)
-            return int(_translate_item(
-                prepared, batch[0], batch_index=batch_index, error_segments=error_segments
-            ))
+            max_attempts = int(prepared["settings"].get("max_parse_retries", 3))
+            if singleton_attempt < max_attempts:
+                return _translate_micro_batch(
+                    prepared, batch, batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer, depth=depth,
+                    singleton_attempt=singleton_attempt + 1,
+                )
+            exc = RuntimeError(f"Segment {batch[0].id} failed micro-batch JSON validation")
+            if prepared["settings"].get("skip_failed_segments"):
+                _record_failed_segment(prepared, batch[0], exc)
+                error_segments.append(batch[0].id)
+                return 0
+            raise exc
         binary = bool((prepared["settings"].get("micro_batch") or {}).get("binary_fallback", True))
         if binary:
             middle = len(batch) // 2
@@ -641,6 +651,23 @@ def _translate_micro_batch(
     )
     if not failed_indices:
         return committed
+    if len(batch) == 1:
+        max_attempts = int(prepared["settings"].get("max_parse_retries", 3))
+        if singleton_attempt < max_attempts:
+            return committed + _translate_micro_batch(
+                prepared, batch, batch_index=batch_index,
+                error_segments=error_segments, pacer=pacer, depth=depth,
+                singleton_attempt=singleton_attempt + 1,
+            )
+        exc = RuntimeError(
+            f"Segment {batch[0].id} failed micro-batch structural validation: "
+            f"{errors.get(0, 'unknown')}"
+        )
+        if prepared["settings"].get("skip_failed_segments"):
+            _record_failed_segment(prepared, batch[0], exc)
+            error_segments.append(batch[0].id)
+            return committed
+        raise exc
 
     # Retry only failed siblings. Split non-adjacent failures into independent
     # runs so already-valid segments are never sent again.
