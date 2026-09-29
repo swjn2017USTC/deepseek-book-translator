@@ -302,33 +302,41 @@ def initialize_project(
 
    `python3 {script} prepare --project {project_path}`
 
-   只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；加密、纯图片、固定版式、
-   scripted/remote-resource 等兼容性风险会被 fail-closed 阻止。
+   只有 `COMPATIBLE_REFLOWABLE` 会进入正式翻译；兼容后会生成 `source_review.md` 并停在原文审核选择门禁。
 
-2. 若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 后默认让 LLM 自动完成术语判断与译名：
+2. 选择是否人工核对整理后的原文 Markdown。若要人工核对：
 
-   `python3 {script} auto-glossary --project {project_path}`
+   `python3 {script} source-review --project {project_path} --mode manual`
 
-   该步骤会保存 `glossary_llm_review.jsonl` 审计记录并自动编译决定；人工术语审核仅作为异常兜底。然后重新执行 prepare。
+   打开 `{project_path / 'source_review.md'}`。可修改可见原文和 Markdown 标题层级，但不要删除或复制 `BOOK_SEGMENT` 注释。完成后运行：
 
-3. 设置 `DEEPSEEK_API_KEY` 后做零网络预检，再按累计目标翻译：
+   `python3 {script} apply-source-review --project {project_path}`
+
+   若不需要人工核对，直接：
+
+   `python3 {script} source-review --project {project_path} --mode auto`
+
+   两条批准路径都会继续自动术语审核。
+
+3. 做零网络预检，再按累计目标翻译：
 
    `python3 {script} preflight --project {project_path}`
    `python3 {script} translate --project {project_path} --target-completed 10`
    `python3 {script} translate --project {project_path} --target-completed 100`
    `python3 {script} translate --project {project_path} --all`
 
+   默认 contextual micro-batch 对普通连续文本最多每次 4 段/6000 字符，高结构风险片段保持 singleton；不同章节最多 4 lanes 并行。失败批次会保留已通过片段，只递归重试未通过项。
+
 4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
 
    `python3 {script} render --project {project_path}`
 
    正式结果写入 `{project_path / 'exports' / (book_id + '.zh-CN.epub')}`。
-   原 EPUB 始终只读；内嵌封面和非文本资源保持原文件。
 """
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
 
-1. 先做一次纯离线章节恢复和清理：
+1. 先做纯离线章节恢复：
 
    `python3 {script} prepare --project {project_path}`
 
@@ -336,43 +344,44 @@ def initialize_project(
 
    `python3 {script} vision-structure --project {project_path}`
 
-   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；没有同名 PDF 时退回 OCR JSON 的 `inputImage`。也可以显式指定：
-   `python3 {script} vision-structure --project {project_path} --pdf /path/to/source.pdf`
+   如有独立原 PDF，可加 `--pdf /path/to/source.pdf`。若仍为 `needs_structure_review`，先处理章节审核并重新 prepare。
 
-   Vision 会识别目录页、抄录目录层级，并扫描 OCR/PDF 规则筛出的正文嫌疑页以补充目录未列出的次级节。结果保存在 `structure/vision_structure.json`，并绑定 OCR SHA-256。
+3. 章节结构稳定后再次 prepare。流水线会在确定 parent/zone 后保守合并跨页断句，并生成带源页码标记的：
 
-3. 若增强后仍为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
+   `{project_path / 'source_review.md'}`
 
-   `python3 {script} compile-reviews --project {project_path} --decisions {project_path / 'structure_decisions.jsonl'}`
+   此时必须选择是否人工核对。人工路径：
 
-   然后重新执行 prepare。Vision 无 OCR 文本匹配的标题会保持低置信度等待人工复核，不得为了过门禁直接批准。
+   `python3 {script} source-review --project {project_path} --mode manual`
 
-4. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
+   修改可见原文/Markdown 标题层级；不要删除或复制隐藏的 `BOOK_SEGMENT` 标记。完成后：
 
-   `python3 {script} auto-glossary --project {project_path}`
+   `python3 {script} apply-source-review --project {project_path}`
 
-   LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
+   全自动路径：
 
-5. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
+   `python3 {script} source-review --project {project_path} --mode auto`
+
+   批准后的 Markdown/segments 才是正式翻译输入；批准后术语审核自动继续。
+
+4. 零网络预检：
 
    `python3 {script} preflight --project {project_path}`
 
-6. 建议先累计翻译 10 个片段，再逐步扩大：
+   预检会按真实 micro-batch planner 报告预计 requests、平均 batch size 和 singleton 数。
+
+5. 分级翻译：
 
    `python3 {script} translate --project {project_path} --target-completed 10`
+   `python3 {script} translate --project {project_path} --target-completed 100`
+   `python3 {script} translate --project {project_path} --all`
 
-   断点续跑时把累计目标改为 100、500 等。确认后整本运行使用显式 `--all`。
+   默认普通连续文本最多 4 target / 6000 字符共享同一份章节上下文；table、attribute、footnote、caption 等高风险项保持 singleton。有效译文会被 partial salvage，只有未通过的 target 被递归拆分重试。
 
-7. 完成率达到 100% 后渲染：
+6. 完成后渲染与导出：
 
    `python3 {script} render --project {project_path}`
-
-8. 用本地排版生成器创建并登记封面：
-
    `python3 {script} generate-cover --project {project_path} --theme auto`
-
-9. 生成带目录的 PDF 和带封面的 EPUB：
-
    `python3 {script} export --project {project_path} --format both`
 """
     (project_path / "RUNBOOK.md").write_text(runbook, encoding="utf-8")
