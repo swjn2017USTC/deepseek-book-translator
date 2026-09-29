@@ -197,3 +197,47 @@ def test_mixed_historical_models_disable_builtin_flash_pricing(tmp_path, monkeyp
     )
     assert report["pricing_supported"] is False
     assert "unknown_or_mixed_model_pricing" in report["warnings"]
+
+def test_usage_totals_micro_batch_counts_only_accepted_segments(tmp_path):
+    path = tmp_path / "usage.jsonl"
+    rows = [
+        {
+            "model": "deepseek-flash",
+            "segment_ids": ["s1", "s2", "s3", "s4"],
+            "accepted_segment_ids": ["s1", "s2", "s4"],
+            "retry_segment_ids": ["s3"],
+            "target_count": 4,
+            "status": "partial_batch",
+            "usage": {
+                "prompt_tokens": 400,
+                "prompt_cache_hit_tokens": 100,
+                "prompt_cache_miss_tokens": 300,
+                "completion_tokens": 200,
+                "request_count": 1,
+            },
+        },
+        {
+            "model": "deepseek-flash",
+            "segment_ids": ["s3"],
+            "accepted_segment_ids": ["s3"],
+            "retry_segment_ids": [],
+            "target_count": 1,
+            "status": "completed_batch",
+            "usage": {
+                "prompt_tokens": 120,
+                "prompt_cache_hit_tokens": 60,
+                "prompt_cache_miss_tokens": 60,
+                "completion_tokens": 50,
+                "request_count": 1,
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    totals = usage_totals(path)
+
+    assert totals["api_completion_requests"] == 2
+    assert totals["completed_segment_ids"] == 4
+    assert totals["micro_batch_records"] == 2
+    assert totals["micro_batch_fallback_records"] == 1
+    assert totals["accepted_segment_references"] == 4
+    assert totals["average_target_references_per_request"] == 2.5

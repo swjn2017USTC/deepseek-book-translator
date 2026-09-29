@@ -25,6 +25,12 @@ from .provenance import require_fresh_cleaning
 from .publish import export_book, register_cover
 from .render import render_book
 from .structure_vision import collect_structure_vision
+from .source_manuscript import (
+    build_source_manuscript,
+    confirm_source_manuscript,
+    require_source_confirmation,
+    source_status,
+)
 from .translate import OpenAICompatibleClient, _batches, _completed, _segments, is_translation_current, translate_book, translation_status
 
 
@@ -97,6 +103,7 @@ def initialize_project(
     author: str = "",
     toc_search_end: int = 30,
     thinking_mode: str = "disabled",
+    source_confirmation: str = "manual",
 ) -> Dict[str, Any]:
     if (input_json is None) == (input_epub is None):
         raise ValueError("Choose exactly one source: input_json or input_epub")
@@ -106,6 +113,8 @@ def initialize_project(
         raise ValueError("toc_search_end must be non-negative")
     if thinking_mode not in {"disabled", "low", "high", "max"}:
         raise ValueError("thinking_mode must be one of: disabled, low, high, max")
+    if source_confirmation not in {"manual", "auto"}:
+        raise ValueError("source_confirmation must be 'manual' or 'auto'")
 
     source_adapter = "epub_native_v1" if input_epub is not None else "ocr_json_v1"
     input_path = (input_epub if input_epub is not None else input_json).expanduser().resolve()
@@ -203,6 +212,15 @@ def initialize_project(
             "allow_pending_review": False,
         },
         "glossary": str(glossary_path),
+        "source_review": {
+            "mode": source_confirmation,
+            "directory": str(project_path / "source"),
+            "markdown": str(project_path / "source" / "structured_source.md"),
+            "state": str(project_path / "source" / "source_state.json"),
+            "generated_segments": str(project_path / "source" / "generated_segments.jsonl"),
+            "cross_page_merge": True,
+            "aggressive_cross_page_merge": False,
+        },
         "glossary_settings": {
             "mode": "master_subset_plus_review",
             "master_json": str(project_path / "glossary_master.json"),
@@ -228,8 +246,15 @@ def initialize_project(
             "next_segments": 1,
             "previous_translation_max_chars": 300,
             "skip_failed_segments": True,
-            "max_workers": 1,
+            "max_workers": 4,
             "max_parse_retries": 3,
+            "micro_batch": {
+                "enabled": True,
+                "max_segments": 4,
+                "max_chars": 6000,
+                "small_kind_max_segments": 2,
+                "binary_fallback": True,
+            },
         },
         "provider": {
             "api_url": "https://api.deepseek.com/chat/completions",
@@ -239,7 +264,7 @@ def initialize_project(
             "native_json_mode": True,
             "auth_header": "Authorization",
             "auth_scheme": "Bearer",
-            "requests_per_minute": 20,
+            "requests_per_minute": 0,
             "timeout_seconds": 1200,
             "retries": 8,
             "max_tokens": 8192,
@@ -303,6 +328,10 @@ def initialize_project(
    `python3 {script} translate --project {project_path} --target-completed 100`
    `python3 {script} translate --project {project_path} --all`
 
+   新项目默认使用同文档/同上下文的 micro-batch：普通连续文本最多 4 个 target / 6000 字符共用一次请求，
+   不跨章节或已完成 checkpoint；table cell、attribute、结构令牌密集段会自动降为 singleton，
+   局部验证失败只重试失败 target。默认最多 4 个章节 lane 并发，不再人为固定 20 RPM。
+
 4. 完成率 100% 后原位回写 DOM、验证结构并重新打包：
 
    `python3 {script} render --project {project_path}`
@@ -313,7 +342,11 @@ def initialize_project(
     else:
         runbook = f"""# {book_title_zh}：新书翻译运行说明
 
-1. 先做一次纯离线章节恢复和清理：
+本项目的结构化原文确认模式：`{source_confirmation}`。
+- `manual`：章节恢复完成后生成 `source/structured_source.md` 并停住，等待人工核对/修补后显式确认。
+- `auto`：仍生成同一个带页码结构化原文，但自动确认并继续后续门禁。
+
+1. 先做一次纯离线章节恢复：
 
    `python3 {script} prepare --project {project_path}`
 
@@ -321,42 +354,62 @@ def initialize_project(
 
    `python3 {script} vision-structure --project {project_path}`
 
-   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；没有同名 PDF 时退回 OCR JSON 的 `inputImage`。也可以显式指定：
+   默认优先读取与 OCR JSON 同名的 PDF 并用 PyMuPDF 渲染页面；也可显式指定：
    `python3 {script} vision-structure --project {project_path} --pdf /path/to/source.pdf`
 
-   Vision 会识别目录页、抄录目录层级，并扫描 OCR/PDF 规则筛出的正文嫌疑页以补充目录未列出的次级节。结果保存在 `structure/vision_structure.json`，并绑定 OCR SHA-256。
+   Vision 会识别目录页、目录层级和正文遗漏小节，但只是证据源；无 OCR 文本匹配的 Vision 标题仍需人工复核。
 
-3. 若增强后仍为 `needs_structure_review`，人工编辑 `structure_decisions.template.jsonl`，再运行：
+3. 若状态仍为 `needs_structure_review`，人工完成结构裁决并重新 prepare：
 
    `python3 {script} compile-reviews --project {project_path} --decisions {project_path / 'structure_decisions.jsonl'}`
+   `python3 {script} prepare --project {project_path}`
 
-   然后重新执行 prepare。Vision 无 OCR 文本匹配的标题会保持低置信度等待人工复核，不得为了过门禁直接批准。
+4. 章节门禁通过后，程序会做第二遍保守跨页正文合并，并生成：
 
-4. 章节门禁通过后，若状态为 `needs_glossary_review`，设置 `DEEPSEEK_API_KEY` 并默认自动完成术语判断与译名：
+   `{project_path / 'source' / 'structured_source.md'}`
+
+   文件带 1-based OCR/PDF 页码或跨页范围，并用隐藏 DBT:SEG 锚点绑定稳定 segment。
+   可以修改标题文字、Markdown 标题层级和正文，但不要删除或修改 DBT:SEG 锚点。
+
+   如果模式是 `manual`，此时状态为 `needs_source_confirmation`。核对并保存后运行：
+
+   `python3 {script} confirm-source --project {project_path}`
+
+   只有确认后的 Markdown 才是术语分析、chapter context 和翻译的 source of truth。
+   确认后再次修改该文件会自动重新锁住翻译，必须再次 confirm-source。
+   如果不希望人工停顿，可切换为全自动：
+   `python3 {script} set-source-confirmation --project {project_path} --mode auto`
+
+5. 若状态为 `needs_glossary_review`，让 DeepSeek 自动审核全部术语候选：
 
    `python3 {script} auto-glossary --project {project_path}`
+   `python3 {script} prepare --project {project_path}`
 
-   LLM 会对所有候选做 include/reject、给出统一译名与置信度；低置信度项自动进入第二轮复核。决定和 usage 会留档，人工术语审核只作为异常兜底。然后重新执行 prepare。
-
-5. 在当前终端设置 `DEEPSEEK_API_KEY` 后做零网络预检：
+6. 零网络预检会按真实 micro-batch 计划估算剩余请求数：
 
    `python3 {script} preflight --project {project_path}`
 
-6. 建议先累计翻译 10 个片段，再逐步扩大：
+   新项目默认普通同章连续文本最多 4 target / 6000 字符共享一次请求；表格和高风险结构自动降级。
+   返回的 `estimated_targets_per_request` 可以直接观察实际合批程度。
+
+7. 建议先累计翻译 10 个 segment，再逐步扩大：
 
    `python3 {script} translate --project {project_path} --target-completed 10`
+   `python3 {script} translate --project {project_path} --target-completed 100`
+   `python3 {script} translate --project {project_path} --all`
 
-   断点续跑时把累计目标改为 100、500 等。确认后整本运行使用显式 `--all`。
+   API 返回中每个 target 仍逐 segment 校验和持久化；一个 batch 内的有效译文会立即保存，
+   单个 target 失败只重试该 target，整体 JSON 损坏则自动二分 fallback。默认最多 4 个章节 lane 并发。
 
-7. 完成率达到 100% 后渲染：
+8. 完成率 100% 后渲染：
 
    `python3 {script} render --project {project_path}`
 
-8. 用本地排版生成器创建并登记封面：
+9. 用本地排版生成器创建并登记封面：
 
    `python3 {script} generate-cover --project {project_path} --theme auto`
 
-9. 生成带目录的 PDF 和带封面的 EPUB：
+10. 生成 PDF 和 EPUB：
 
    `python3 {script} export --project {project_path} --format both`
 """
@@ -543,7 +596,25 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     if _is_epub_project(project):
         return _prepare_epub_project(project)
-    _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
+
+    structure_dir = Path(project["structure_dir"])
+    structure_path = structure_dir / "book_structure.json"
+    # The first OCR prepare must run chapter recovery before load_config(), which
+    # intentionally requires structure_json to exist. Only established projects
+    # can already have a human source manuscript that must be protected.
+    if structure_path.is_file():
+        config = _translation_config(project)
+        source_gate = source_status(config)
+    else:
+        config = None
+        source_gate = {"status": "not_generated", "applicable": True}
+    preserve_review_source = source_gate.get("status") in {
+        "needs_confirmation", "confirmed", "edited_after_confirmation",
+    }
+    if not preserve_review_source:
+        _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
+    config = _translation_config(project)
+
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
     review_path = structure_dir / "review_packets.jsonl"
@@ -560,24 +631,50 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
             "pending_structure_reviews": pending,
             "review_packets": str(review_path),
             "decision_template": str(template),
+            "source_manuscript": source_status(config),
             "translation_started": False,
         }
-    else:
-        config = _translation_config(project)
+        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        return result
+
+    source_gate = source_status(config)
+    if source_gate.get("status") in {"not_generated", "stale", "invalid_state"}:
         cleaning = clean_book(config)
-        glossary = generate_glossary(config)
-        status = translation_status(config)
+        source_gate = build_source_manuscript(config, force=True)
+    else:
+        cleaning_path = resolve_path(config, "output_dir") / "cleaning_report.json"
+        cleaning = json.loads(cleaning_path.read_text(encoding="utf-8")) if cleaning_path.is_file() else {"metrics": {}}
+
+    if source_gate.get("status") in {"needs_confirmation", "edited_after_confirmation"}:
         result = {
             "schema_version": 1,
             "book_id": project["book_id"],
-            "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+            "status": "needs_source_confirmation",
             "validation_ok": True,
             "pending_structure_reviews": 0,
-            "cleaning_metrics": cleaning["metrics"],
-            "translation": status,
-            "glossary": glossary,
+            "source_manuscript": source_gate,
+            "cleaning_metrics": cleaning.get("metrics", {}),
             "translation_started": False,
         }
+        write_json(Path(project["project_dir"]) / "workflow_status.json", result)
+        return result
+
+    require_source_confirmation(config)
+    require_fresh_cleaning(config)
+    glossary = generate_glossary(config)
+    status = translation_status(config)
+    result = {
+        "schema_version": 1,
+        "book_id": project["book_id"],
+        "status": "ready_to_translate" if glossary.get("approved") else "needs_glossary_review",
+        "validation_ok": True,
+        "pending_structure_reviews": 0,
+        "source_manuscript": source_status(config),
+        "cleaning_metrics": cleaning.get("metrics", {}),
+        "translation": status,
+        "glossary": glossary,
+        "translation_started": False,
+    }
     write_json(Path(project["project_dir"]) / "workflow_status.json", result)
     return result
 
@@ -652,10 +749,45 @@ def compile_reviews(project_path: Path, decisions: Path) -> Dict[str, Any]:
     return {"book_id": project["book_id"], "status": "reviews_compiled", "overrides": str(output), "next": "rerun prepare"}
 
 
+def confirm_source_project(project_path: Path) -> Dict[str, Any]:
+    project = _project_manifest(project_path)
+    if _is_epub_project(project):
+        return {"status": "not_applicable", "source_adapter": "epub_native_v1"}
+    config = _translation_config(project)
+    confirmed = confirm_source_manuscript(config)
+    prepared = prepare_project(project_path)
+    return {"status": confirmed["status"], "source_manuscript": confirmed, "prepared": prepared}
+
+
+def set_source_confirmation_mode(project_path: Path, mode: str) -> Dict[str, Any]:
+    if mode not in {"manual", "auto"}:
+        raise ValueError("source confirmation mode must be manual or auto")
+    project = _project_manifest(project_path)
+    config_path = Path(project["translation_config"]).expanduser().resolve()
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    review = dict(raw.get("source_review") or {})
+    review["mode"] = mode
+    raw["source_review"] = review
+    write_json(config_path, raw)
+    state_path = Path(str(review.get("state") or (Path(project["project_dir"]) / "source" / "source_state.json"))).expanduser()
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["mode"] = mode
+        write_json(state_path, state)
+    if mode == "auto":
+        config = _translation_config(project)
+        status = source_status(config)
+        if status.get("status") in {"needs_confirmation", "edited_after_confirmation"}:
+            confirmed = confirm_source_manuscript(config)
+            return {"status": "updated_and_confirmed", "mode": mode, "source_manuscript": confirmed}
+    return {"status": "updated", "mode": mode}
+
+
 def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     return generate_glossary(config, force=force)
 
@@ -681,6 +813,7 @@ def auto_review_project_glossary(
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     manifest = generate_glossary(config)
     if manifest.get("approved"):
@@ -719,6 +852,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
     validation_ok = bool(validation.get("ok"))
     pending = _nonempty_lines(review_path)
     config = _translation_config(project)
+    source_gate = source_status(config)
     output_dir = resolve_path(config, "output_dir")
     cleaned = (output_dir / "cleaned_segments.jsonl").exists()
     fresh = False
@@ -759,6 +893,8 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         status = "blocked_epub_compatibility"
     elif not validation_ok or pending:
         status = "needs_structure_review"
+    elif source_gate.get("applicable") and source_gate.get("status") != "confirmed":
+        status = "needs_source_confirmation"
     elif not cleaned or not fresh:
         status = "needs_prepare"
     elif not glossary_ready:
@@ -792,6 +928,7 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "translation": translation,
         "cost": cost,
         "vision_structure": vision,
+        "source_manuscript": source_gate,
     }
 
 
@@ -799,6 +936,7 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     glossary_sha256 = require_ready_glossary(config)
     cache_sha256 = glossary_sha256 if config.get("glossary_settings", {}).get("bind_translation_cache", False) else ""
@@ -815,12 +953,35 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
     ]
     contextual = (config.get("translation") or {}).get("context_mode") == "contextual_v2"
     if contextual:
-        estimated_requests = len(pending)
+        from .contextual.batching import build_micro_batches
+        from .contextual.briefs import nodes_index
+        from .contextual.invalidation import brief_key_for_segment
+
+        structure = json.loads(resolve_path(config, "structure_json").read_text(encoding="utf-8"))
+        nodes_by_id = nodes_index(structure)
+        chapter_of = {
+            segment.id: brief_key_for_segment(segment, nodes_by_id)
+            for segment in segments
+            if segment.translatable or segment.source_text.strip()
+        }
+        preflight_settings = dict(config.get("translation") or {})
+        if "micro_batch" not in preflight_settings:
+            preflight_settings["micro_batch"] = {"enabled": False}
+        batches = build_micro_batches(
+            segments, pending, chapter_of, preflight_settings
+        )
+        estimated_requests = len(batches)
+        estimated_targets_per_request = (
+            round(len(pending) / estimated_requests, 3) if estimated_requests else None
+        )
     else:
         chunk = config.get("chunk", {})
         estimated_requests = len(list(_batches(
             pending, int(chunk.get("max_chars", 10000)), int(chunk.get("max_segments", 20))
         )))
+        estimated_targets_per_request = (
+            round(len(pending) / estimated_requests, 3) if estimated_requests else None
+        )
     status = translation_status(config)
     return {
         "schema_version": 1,
@@ -835,6 +996,8 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
         "remaining_segments": status["remaining_segments"],
         "estimated_remaining_requests": estimated_requests,
         "estimated_remaining_batches": estimated_requests,
+        "estimated_targets_per_request": estimated_targets_per_request,
+        "micro_batch": dict((config.get("translation") or {}).get("micro_batch") or {}) if contextual else None,
         "remaining_translatable_characters": sum(len(segment.source_text) for segment in pending),
     }
 
@@ -844,6 +1007,7 @@ def translate_project(project_path: Path, target_completed: Optional[int], all_s
         raise ValueError("Choose an explicit --target-completed value or --all")
     project = _project_manifest(project_path)
     config = _translation_config(project)
+    require_source_confirmation(config)
     target = None if all_segments else target_completed
     if (config.get("translation") or {}).get("context_mode") == "contextual_v2":
         from .contextual import translate_v2
@@ -927,6 +1091,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--author", default="")
     init.add_argument("--toc-search-end", type=int, default=30)
     init.add_argument("--thinking-mode", choices=("disabled", "low", "high", "max"), default="disabled")
+    init.add_argument(
+        "--source-confirmation", choices=("manual", "auto"), default="manual",
+        help="manual waits for review of source/structured_source.md; auto continues unattended",
+    )
     for name in ("prepare", "status", "preflight", "render"):
         command = commands.add_parser(name)
         command.add_argument("--project", type=Path, required=True)
@@ -938,6 +1106,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vision.add_argument("--project", type=Path, required=True)
     vision.add_argument("--pdf", type=Path)
+    confirm_source = commands.add_parser(
+        "confirm-source",
+        help="accept edits in source/structured_source.md and make it the translation source of truth",
+    )
+    confirm_source.add_argument("--project", type=Path, required=True)
+    source_mode = commands.add_parser(
+        "set-source-confirmation",
+        help="switch OCR source confirmation between manual and auto",
+    )
+    source_mode.add_argument("--project", type=Path, required=True)
+    source_mode.add_argument("--mode", choices=("manual", "auto"), required=True)
     compile_command = commands.add_parser("compile-reviews")
     compile_command.add_argument("--project", type=Path, required=True)
     compile_command.add_argument("--decisions", type=Path, required=True)
@@ -992,11 +1171,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             target_lang=args.target_lang, domain=args.domain, author=args.author,
             toc_search_end=args.toc_search_end,
             thinking_mode=args.thinking_mode,
+            source_confirmation=args.source_confirmation,
         )
     elif args.command == "prepare":
         result = prepare_project(args.project)
     elif args.command == "vision-structure":
         result = vision_enhance_project(args.project, args.pdf)
+    elif args.command == "confirm-source":
+        result = confirm_source_project(args.project)
+    elif args.command == "set-source-confirmation":
+        result = set_source_confirmation_mode(args.project, args.mode)
     elif args.command == "compile-reviews":
         result = compile_reviews(args.project, args.decisions)
     elif args.command == "glossary":

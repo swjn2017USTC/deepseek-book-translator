@@ -1,6 +1,6 @@
 # Structured Book Translation Pipeline
 
-处理 PaddleOCR JSON 或 native reflowable EPUB，通过 DeepSeek 官方 API 断点翻译，并渲染/回写结构化书籍。OCR 输入使用相邻的 `chapter-structure-recovery-lab/` 做确定性章节恢复，并可在人工审核前通过 DeepSeek Vision + PyMuPDF 增加 TOC/正文标题视觉证据；EPUB 使用 package/DOM-preserving 适配器。
+处理 PaddleOCR JSON 或 native reflowable EPUB，通过 DeepSeek 官方 API 断点翻译，并渲染/回写结构化书籍。OCR 输入先用 `chapter-structure-recovery-lab` + DeepSeek Vision/PyMuPDF 恢复章节，再生成带页码、可人工修改确认的 `source/structured_source.md`；确认后的 Markdown 成为 OCR 术语/上下文/翻译 source of truth。EPUB 始终以 package/DOM slots 为 source of truth，不经过可编辑 Markdown 重建。
 
 主要入口：
 
@@ -24,3 +24,18 @@ The existing OCR/Pandoc workflow remains available for PDF/OCR sources. For a
 native EPUB project, use the EPUB helpers before publishing and require a
 100% current translation plus EPUBCheck validation; partial renders are
 explicitly non-release artifacts.
+
+
+## OCR source confirmation
+
+新 OCR 项目初始化时可选择：
+
+```bash
+python3 new_book.py init ... --source-confirmation manual
+# 或
+python3 new_book.py init ... --source-confirmation auto
+```
+
+章节结构门禁通过后 `prepare` 会做一次后结构跨页合并并生成 `source/structured_source.md`。manual 模式停在 `needs_source_confirmation`；人工核对保存后运行 `python3 new_book.py confirm-source --project <PROJECT>`。确认后再改 Markdown 会被 provenance 检测并重新阻止翻译。
+
+`preflight` 会按实际 micro-batch 规则返回 `estimated_remaining_requests` 和 `estimated_targets_per_request`，用于在真正调用模型前观察合批收益。

@@ -214,6 +214,22 @@ class ContextualFakeClient:
         payload = json.loads(user)
         if payload.get("probe") is not None:
             return json.dumps({"ok": True}), {"prompt_tokens": 1, "completion_tokens": 1}
+        if payload.get("targets") is not None:
+            targets = payload["targets"]
+            if self.mode == "not-json":
+                content = "not json at all"
+            elif self.mode == "leak":
+                content = json.dumps({
+                    "t": [[row["n"], "译：" + row["text"]] for row in targets]
+                         + [[999, "译：leaked context"]]
+                }, ensure_ascii=False)
+            elif self.mode == "missing-id":
+                content = json.dumps({"t": [["bad", "译：missing index"]]}, ensure_ascii=False)
+            else:
+                content = json.dumps({
+                    "t": [[row["n"], "译：" + row["text"]] for row in targets]
+                }, ensure_ascii=False)
+            return content, {"prompt_tokens": 10, "completion_tokens": 20}
         target = payload["target"]
         if self.mode == "leak":
             content = json.dumps(
@@ -1055,3 +1071,100 @@ def test_url_token_stops_at_cjk_punctuation():
     import pytest as _pt
     with _pt.raises(ValueError, match="Structural token mismatch"):
         _verify_structural_tokens(seg, "无链接译文。")
+
+
+def test_micro_batch_four_targets_reduces_wire_requests_without_changing_records(tmp_path):
+    config = write_fixture_book(tmp_path, translation={
+        "context_mode": "contextual_v2",
+        "previous_segments": 1,
+        "next_segments": 1,
+        "previous_translation_max_chars": 300,
+        "max_parse_retries": 3,
+        "max_workers": 1,
+        "micro_batch": {
+            "enabled": True,
+            "max_segments": 4,
+            "max_chars": 6000,
+            "small_kind_max_segments": 2,
+            "binary_fallback": True,
+        },
+    })
+    fake = ContextualFakeClient()
+    report = translate_v2(config, fake)
+
+    assert report["completed_segments"] == 18
+    assert report["remaining_segments"] == 0
+    assert report["planned_micro_batches"] == 5
+    provider_calls = [json.loads(call["user"]) for call in fake.calls if json.loads(call["user"]).get("targets") is not None]
+    assert len(provider_calls) == 5
+    assert max(len(payload["targets"]) for payload in provider_calls) <= 4
+    assert all("brief_hash" not in payload["chapter_context"] for payload in provider_calls)
+
+    rows = list(read_jsonl(Path(config["output_dir"]) / "translations.jsonl"))
+    assert len(rows) == 18
+    assert all(row["metadata"]["context_mode"] == "contextual_v2" for row in rows)
+    usage = list(read_jsonl(Path(config["output_dir"]) / "usage.jsonl"))
+    assert len(usage) == 5
+    assert all(row["context_mode"] == "contextual_v2_microbatch" for row in usage)
+    assert sum(len(row["accepted_segment_ids"]) for row in usage) == 18
+
+
+def test_micro_batch_partial_salvage_retries_only_failed_target(tmp_path):
+    config = write_fixture_book(
+        tmp_path,
+        segments=FIXTURE_SEGMENTS[2:6],
+        translation={
+            "context_mode": "contextual_v2",
+            "previous_segments": 1,
+            "next_segments": 1,
+            "previous_translation_max_chars": 300,
+            "max_parse_retries": 3,
+            "max_workers": 1,
+            "micro_batch": {
+                "enabled": True,
+                "max_segments": 4,
+                "max_chars": 6000,
+                "small_kind_max_segments": 2,
+                "binary_fallback": True,
+            },
+        },
+    )
+
+    class PartialClient(ContextualFakeClient):
+        def complete(self, system, user):
+            self.calls.append({"system": system, "user": user})
+            payload = json.loads(user)
+            targets = payload.get("targets")
+            if targets is None:
+                return super().complete(system, user)
+            if len(self.calls) == 1:
+                rows = []
+                for row in targets:
+                    text = "" if row["n"] == 1 else "译：" + row["text"]
+                    rows.append([row["n"], text])
+                return json.dumps({"t": rows}, ensure_ascii=False), {
+                    "prompt_tokens": 100, "completion_tokens": 100,
+                }
+            return json.dumps({
+                "t": [[row["n"], "译：" + row["text"]] for row in targets]
+            }, ensure_ascii=False), {"prompt_tokens": 30, "completion_tokens": 20}
+
+    fake = PartialClient()
+    report = translate_v2(config, fake)
+    assert report["completed_segments"] == 4
+    assert report["remaining_segments"] == 0
+
+    calls = [json.loads(call["user"]) for call in fake.calls]
+    assert len(calls) == 2
+    assert len(calls[0]["targets"]) == 4
+    assert len(calls[1]["targets"]) == 1
+    assert calls[1]["targets"][0]["text"] == FIXTURE_SEGMENTS[3]["source_text"]
+
+    usage = list(read_jsonl(Path(config["output_dir"]) / "usage.jsonl"))
+    assert len(usage) == 2
+    assert usage[0]["status"] == "partial_batch"
+    assert len(usage[0]["accepted_segment_ids"]) == 3
+    assert len(usage[0]["retry_segment_ids"]) == 1
+    assert usage[1]["status"] == "completed_batch"
+    assert usage[1]["target_count"] == 1
+

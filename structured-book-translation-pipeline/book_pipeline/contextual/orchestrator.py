@@ -47,8 +47,15 @@ from .invalidation import (
     current_concept_versions,
     is_translation_current_v2,
 )
-from .parser import parse_target_only
-from .prompts import PROMPTS_VERSION, build_payload, system_prompt
+from .batching import build_micro_batches
+from .parser import parse_batch_partial, parse_target_only
+from .prompts import (
+    PROMPTS_VERSION,
+    batch_system_prompt,
+    build_batch_payload,
+    build_payload,
+    system_prompt,
+)
 from .records import record_row
 from .windows import chapter_order, previous_translation_text, window
 
@@ -99,11 +106,14 @@ def _v2_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("translation.previous_translation_max_chars must be non-negative")
     if max_parse_retries < 1 or max_parse_retries > 10:
         raise ValueError("translation.max_parse_retries must be between 1 and 10")
+    micro_batch = {"enabled": False}
+    micro_batch.update(dict(translation.get("micro_batch") or {}))
     return {
         "previous_segments": previous_segments,
         "next_segments": next_segments,
         "previous_translation_max_chars": previous_translation_max_chars,
         "max_parse_retries": max_parse_retries,
+        "micro_batch": micro_batch,
         # P09 unattended-run fix: when true, a segment that fails all parse
         # attempts is recorded as an explicit status:'error' row and SKIPPED so
         # the rest of the book still translates; the next run retries it.
@@ -162,7 +172,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
     for segment in segments:
         if segment.translatable or segment.source_text.strip():
             chapter_of[segment.id] = brief_key_for_segment(segment, nodes_by_id)
-    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 20))
+    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 0))
     delay = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
 
     def current(segment: Segment) -> bool:
@@ -190,6 +200,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
         "brief_hashes": brief_hashes,
         "brief_payloads": brief_payloads,
         "glossary_sha256": glossary_sha256,
+        "prompt_version": PROMPTS_VERSION,
         "delay": delay,
         "current": current,
         "_contexts": {},
@@ -383,6 +394,8 @@ def _v2_report(prepared: Dict[str, Any], translated_this_run: int) -> Dict[str, 
         "translation_file": str(prepared["progress_path"]),
         "usage_file": str(prepared["usage_path"]),
         "cost": cost,
+        "micro_batch": dict((config.get("translation") or {}).get("micro_batch") or {}),
+        "planned_micro_batches": prepared.get("planned_micro_batches"),
     }
 
 
@@ -411,20 +424,298 @@ def _translate_item(
     return True
 
 
+def _batch_dependencies(
+    prepared: Dict[str, Any],
+    batch: List[Segment],
+) -> tuple[Dict[str, Dict[str, int]], List[Dict[str, Any]]]:
+    dependencies: Dict[str, Dict[str, int]] = {}
+    glossary_by_id: Dict[str, Dict[str, Any]] = {}
+    for segment in batch:
+        deps = resolve_concept_deps(segment, prepared["concepts"])
+        dependencies[segment.id] = deps
+        for entry in glossary_subset(segment, prepared["concepts"], deps):
+            key = str(entry.get("concept_id") or entry.get("term") or "")
+            if key and key not in glossary_by_id:
+                glossary_by_id[key] = entry
+    return dependencies, list(glossary_by_id.values())
+
+
+def _batch_context(
+    prepared: Dict[str, Any],
+    batch: List[Segment],
+) -> tuple[str, List[str], List[str], str]:
+    chapter_id = prepared["chapter_of"].get(batch[0].id)
+    if not chapter_id or any(prepared["chapter_of"].get(segment.id) != chapter_id for segment in batch):
+        raise RuntimeError("Micro-batch targets must belong to exactly one chapter")
+    context = _context(prepared, chapter_id)
+    indices = [context["position"].get(segment.id) for segment in batch]
+    if any(index is None for index in indices):
+        raise RuntimeError("Micro-batch target is missing from chapter context")
+    numeric = [int(index) for index in indices if index is not None]
+    start, end = min(numeric), max(numeric)
+    if numeric != list(range(start, end + 1)):
+        raise RuntimeError("Micro-batch targets must be contiguous in chapter order")
+    settings = prepared["settings"]
+    previous = [
+        segment.source_text
+        for segment in context["members"][max(0, start - settings["previous_segments"]):start]
+    ]
+    following = [
+        segment.source_text
+        for segment in context["members"][end + 1:end + 1 + settings["next_segments"]]
+    ]
+    previous_translation = previous_translation_text(
+        context["rows"][:start],
+        max_chars=settings["previous_translation_max_chars"],
+        sentence_finish=SENTENCE_FINISH,
+    )
+    return chapter_id, previous, following, previous_translation
+
+
+def _commit_batch_records(
+    prepared: Dict[str, Any],
+    batch: List[Segment],
+    translated: Dict[int, str],
+    dependencies: Dict[str, Dict[str, int]],
+) -> int:
+    if not translated:
+        return 0
+    chapter_id = prepared["chapter_of"].get(batch[0].id)
+    if not chapter_id:
+        raise RuntimeError("Missing chapter for micro-batch")
+    brief = prepared["briefs"][chapter_id]
+    records = []
+    record_by_id: Dict[str, Dict[str, Any]] = {}
+    for index in sorted(translated):
+        segment = batch[index]
+        record = record_row(
+            segment,
+            translated[index],
+            prepared["client"].model,
+            prepared["glossary_sha256"],
+            chapter_id=chapter_id,
+            brief_hash=brief.brief_hash,
+            prompt_version=PROMPTS_VERSION,
+            deps=dependencies.get(segment.id, {}),
+        )
+        records.append(record)
+        record_by_id[segment.id] = record
+    with _APPEND_LOCK:
+        append_jsonl(prepared["progress_path"], records)
+        for segment in batch:
+            record = record_by_id.get(segment.id)
+            if record is None:
+                continue
+            prepared["completed"][segment.id] = record
+            if chapter_id in prepared["_contexts"]:
+                context = prepared["_contexts"][chapter_id]
+                position = context["position"].get(segment.id)
+                if position is not None:
+                    context["rows"][position] = record
+    return len(records)
+
+
+def _append_batch_usage(
+    prepared: Dict[str, Any],
+    batch: List[Segment],
+    *,
+    batch_index: int,
+    usage: Dict[str, Any],
+    status: str,
+    accepted: List[str],
+    retry: List[str],
+    depth: int,
+) -> None:
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "batch": batch_index,
+        "model": prepared["client"].model,
+        "segment_ids": [segment.id for segment in batch],
+        "accepted_segment_ids": accepted,
+        "retry_segment_ids": retry,
+        "usage": usage,
+        "parse_attempts": 1,
+        "api_completion_requests": int(usage.get("request_count") or 1),
+        "prompt_version": PROMPTS_VERSION,
+        "context_mode": "contextual_v2_microbatch",
+        "status": status,
+        "fallback_depth": depth,
+        "target_count": len(batch),
+    }
+    with _APPEND_LOCK:
+        append_jsonl(prepared["usage_path"], [row])
+
+
+def _pace(prepared: Dict[str, Any], pacer: Optional[Any]) -> None:
+    if pacer is not None:
+        pacer.wait()
+    elif prepared["delay"]:
+        time.sleep(prepared["delay"])
+
+
+def _translate_micro_batch(
+    prepared: Dict[str, Any],
+    batch: List[Segment],
+    *,
+    batch_index: int,
+    error_segments: List[str],
+    pacer: Optional[Any] = None,
+    depth: int = 0,
+    singleton_attempt: int = 1,
+) -> int:
+    if not batch:
+        return 0
+    if len(batch) == 1 and not bool((prepared["settings"].get("micro_batch") or {}).get("enabled", True)):
+        _pace(prepared, pacer)
+        return int(_translate_item(
+            prepared, batch[0], batch_index=batch_index, error_segments=error_segments
+        ))
+
+    chapter_id, previous, following, previous_translation = _batch_context(prepared, batch)
+    dependencies, glossary = _batch_dependencies(prepared, batch)
+    prompt = batch_system_prompt(prepared["config"])
+    if any(
+        segment.kind in {"footnote", "caption"}
+        or str((segment.metadata or {}).get("label") or "") == "reference_content"
+        for segment in batch
+    ):
+        prompt += (
+            "\n本批含书目/脚注类文本：其中英文书名和文章标题必须出现目标语言译名；"
+            "作者、期刊、出版社、URL、DOI 可保留可核对原文。"
+        )
+    payload = build_batch_payload(
+        chapter_brief=prepared["brief_payloads"][chapter_id],
+        previous_source=previous,
+        targets=batch,
+        next_source=following,
+        previous_translation=previous_translation,
+        glossary=glossary,
+    )
+    _pace(prepared, pacer)
+    complete_json_text = getattr(prepared["client"], "complete_json_text", None)
+    if callable(complete_json_text):
+        content, raw_usage = complete_json_text(prompt, json.dumps(payload, ensure_ascii=False))
+    else:
+        content, raw_usage = prepared["client"].complete(prompt, json.dumps(payload, ensure_ascii=False))
+    usage = aggregate_usage([dict(raw_usage or {})])
+
+    try:
+        valid, errors = parse_batch_partial(content, batch)
+    except (ValueError, json.JSONDecodeError) as exc:
+        (prepared["output_dir"] / "last_invalid_response.txt").write_text(content, encoding="utf-8")
+        _append_batch_usage(
+            prepared, batch, batch_index=batch_index, usage=usage,
+            status="batch_parse_fallback", accepted=[],
+            retry=[segment.id for segment in batch], depth=depth,
+        )
+        if len(batch) == 1:
+            max_attempts = int(prepared["settings"].get("max_parse_retries", 3))
+            if singleton_attempt < max_attempts:
+                return _translate_micro_batch(
+                    prepared, batch, batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer, depth=depth,
+                    singleton_attempt=singleton_attempt + 1,
+                )
+            exc = RuntimeError(f"Segment {batch[0].id} failed micro-batch JSON validation")
+            if prepared["settings"].get("skip_failed_segments"):
+                _record_failed_segment(prepared, batch[0], exc)
+                error_segments.append(batch[0].id)
+                return 0
+            raise exc
+        binary = bool((prepared["settings"].get("micro_batch") or {}).get("binary_fallback", True))
+        if binary:
+            middle = len(batch) // 2
+            return (
+                _translate_micro_batch(
+                    prepared, batch[:middle], batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer, depth=depth + 1,
+                )
+                + _translate_micro_batch(
+                    prepared, batch[middle:], batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer, depth=depth + 1,
+                )
+            )
+        return sum(
+            _translate_micro_batch(
+                prepared, [segment], batch_index=batch_index,
+                error_segments=error_segments, pacer=pacer, depth=depth + 1,
+            )
+            for segment in batch
+        )
+
+    accepted_ids = [batch[index].id for index in sorted(valid)]
+    failed_indices = sorted(errors)
+    retry_ids = [batch[index].id for index in failed_indices]
+    committed = _commit_batch_records(prepared, batch, valid, dependencies)
+    _append_batch_usage(
+        prepared, batch, batch_index=batch_index, usage=usage,
+        status="completed_batch" if not failed_indices else "partial_batch",
+        accepted=accepted_ids, retry=retry_ids, depth=depth,
+    )
+    if not failed_indices:
+        return committed
+    if len(batch) == 1:
+        max_attempts = int(prepared["settings"].get("max_parse_retries", 3))
+        if singleton_attempt < max_attempts:
+            return committed + _translate_micro_batch(
+                prepared, batch, batch_index=batch_index,
+                error_segments=error_segments, pacer=pacer, depth=depth,
+                singleton_attempt=singleton_attempt + 1,
+            )
+        exc = RuntimeError(
+            f"Segment {batch[0].id} failed micro-batch structural validation: "
+            f"{errors.get(0, 'unknown')}"
+        )
+        if prepared["settings"].get("skip_failed_segments"):
+            _record_failed_segment(prepared, batch[0], exc)
+            error_segments.append(batch[0].id)
+            return committed
+        raise exc
+
+    # Retry only failed siblings. Split non-adjacent failures into independent
+    # runs so already-valid segments are never sent again.
+    runs: List[List[Segment]] = []
+    current: List[Segment] = []
+    previous_index: Optional[int] = None
+    for index in failed_indices:
+        if previous_index is not None and index != previous_index + 1 and current:
+            runs.append(current)
+            current = []
+        current.append(batch[index])
+        previous_index = index
+    if current:
+        runs.append(current)
+
+    retried = 0
+    for run in runs:
+        if len(run) == len(batch) and len(run) > 1:
+            middle = len(run) // 2
+            pieces = [run[:middle], run[middle:]]
+        else:
+            pieces = [run]
+        for piece in pieces:
+            retried += _translate_micro_batch(
+                prepared, piece, batch_index=batch_index,
+                error_segments=error_segments, pacer=pacer, depth=depth + 1,
+            )
+    return committed + retried
+
+
 def _translate_serial(
     prepared: Dict[str, Any],
     pending: List[Segment],
     error_segments: List[str],
 ) -> int:
-    """Existing single-threaded loop (max_workers<=1): unchanged behaviour."""
-    translated_this_run = 0
-    for batch_index, segment in enumerate(pending, 1):
-        if _translate_item(prepared, segment, batch_index=batch_index,
-                           error_segments=error_segments):
-            translated_this_run += 1
-        if prepared["delay"]:
-            time.sleep(prepared["delay"])
-    return translated_this_run
+    batches = build_micro_batches(
+        prepared["segments"], pending, prepared["chapter_of"], prepared["settings"]
+    )
+    translated = 0
+    for batch_index, batch in enumerate(batches, 1):
+        translated += _translate_micro_batch(
+            prepared, batch, batch_index=batch_index, error_segments=error_segments
+        )
+    prepared["planned_micro_batches"] = len(batches)
+    return translated
 
 
 class _Pacer:
@@ -460,33 +751,23 @@ def _translate_parallel(
     *,
     max_workers: int,
 ) -> int:
-    """Parallel translate across CHAPTER lanes; serial within a chapter.
-
-    Segments of the same chapter are processed one at a time because
-    ``_translate_one`` feeds the immediately-preceding committed translation
-    back as context.  Different chapters are fully independent, so up to
-    ``max_workers`` chapters translate concurrently.  Concurrency is bounded
-    by ``min(max_workers, len(pending))`` threads in ONE process — no child
-    processes are spawned, so nothing can become an orphaned worker holding a
-    provider slot after the run ends.  Aggregate fire rate is globally paced
-    by ``requests_per_minute`` (``_Pacer``); a worker stuck inside a bounded
-    retry chain releases its slot automatically (error row under
-    ``skip_failed_segments`` frees the lane for the next run).
-    """
+    """Translate micro-batches concurrently across chapter lanes, serial in-chapter."""
     if max_workers <= 1 or len(pending) <= 1:
         return _translate_serial(prepared, pending, error_segments)
-    # Group pending by chapter, preserving source order within a chapter.
+
+    batches = build_micro_batches(
+        prepared["segments"], pending, prepared["chapter_of"], prepared["settings"]
+    )
+    prepared["planned_micro_batches"] = len(batches)
     lanes: Dict[str, List[tuple]] = {}
-    for batch_index, segment in enumerate(pending, 1):
-        chapter = prepared["chapter_of"].get(segment.id) or ""
-        lanes.setdefault(chapter, []).append((batch_index, segment))
+    for batch_index, batch in enumerate(batches, 1):
+        chapter = prepared["chapter_of"].get(batch[0].id) or ""
+        lanes.setdefault(chapter, []).append((batch_index, batch))
+
     pacer = _Pacer(prepared["delay"])
     lock = threading.Condition()
-    ready: List[str] = []            # chapter keys whose head segment is free
-    position: Dict[str, int] = {}    # chapter -> next pending index to dispatch
-    for chapter in lanes:
-        ready.append(chapter)
-        position[chapter] = 0
+    ready: List[str] = list(lanes)
+    position: Dict[str, int] = {chapter: 0 for chapter in lanes}
     stop = threading.Event()
     translated = 0
     inflight = 0
@@ -507,14 +788,13 @@ def _translate_parallel(
                 idx = position[chapter]
                 position[chapter] = idx + 1
                 inflight += 1
-            batch_index, segment = lanes[chapter][idx]
+            batch_index, batch = lanes[chapter][idx]
             try:
-                pacer.wait()
-                ok = _translate_item(
-                    prepared, segment, batch_index=batch_index,
-                    error_segments=error_segments,
+                completed = _translate_micro_batch(
+                    prepared, batch, batch_index=batch_index,
+                    error_segments=error_segments, pacer=pacer,
                 )
-            except BaseException as exc:  # noqa: BLE001 - propagate first error
+            except BaseException as exc:  # noqa: BLE001
                 with lock:
                     inflight -= 1
                     if not first_error:
@@ -524,14 +804,15 @@ def _translate_parallel(
                 return
             with lock:
                 inflight -= 1
-                if ok:
-                    translated += 1
+                translated += completed
                 if position[chapter] < len(lanes[chapter]):
                     ready.append(chapter)
                 lock.notify_all()
 
-    workers = [threading.Thread(target=worker, daemon=True)
-               for _ in range(min(max_workers, len(lanes)))]
+    workers = [
+        threading.Thread(target=worker, daemon=True)
+        for _ in range(min(max_workers, len(lanes)))
+    ]
     for thread in workers:
         thread.start()
     for thread in workers:
@@ -604,6 +885,7 @@ def translate_v2(
     report["error_segment_count"] = len(error_segments)
     report["error_segment_ids"] = error_segments
     report["max_workers"] = max_workers
+    report["planned_micro_batches"] = prepared.get("planned_micro_batches")
     _write_status_file(prepared)
     return report
 

@@ -28,6 +28,7 @@ from book_pipeline.publish import (
 from book_pipeline.translate import OpenAICompatibleClient, translate_book, translation_status
 from book_pipeline.workflow import (
     initialize_project,
+    confirm_source_project,
     compile_project_glossary,
     preflight_project,
     prepare_project,
@@ -248,8 +249,17 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
     assert (translation["previous_segments"], translation["next_segments"]) == (1, 1)
     assert translation["previous_translation_max_chars"] == 300
     assert translation["skip_failed_segments"] is True
-    assert translation["max_workers"] == 1
+    assert translation["max_workers"] == 4
     assert translation["max_parse_retries"] == 3
+    assert translation["micro_batch"] == {
+        "enabled": True,
+        "max_segments": 4,
+        "max_chars": 6000,
+        "small_kind_max_segments": 2,
+        "binary_fallback": True,
+    }
+    assert translation_config["provider"]["requests_per_minute"] == 0
+    assert translation_config["source_review"]["mode"] == "manual"
     assert translation_config["publish"]["epubcheck"] == {
         "enabled": True, "require": True, "path": ""
     }
@@ -260,6 +270,12 @@ def test_new_book_workflow_initializes_and_prepares_without_translation(tmp_path
 
     prepared = prepare_project(project_dir)
 
+    assert prepared["status"] == "needs_source_confirmation"
+    source_markdown = project_dir / "source" / "structured_source.md"
+    assert source_markdown.is_file()
+    assert "OCR/PDF 页" in source_markdown.read_text(encoding="utf-8")
+    confirmed = confirm_source_project(project_dir)
+    prepared = confirmed["prepared"]
     assert prepared["status"] == "needs_glossary_review"
     candidates = list(read_jsonl(project_dir / "glossary_candidates.jsonl"))
     assert candidates

@@ -13,20 +13,32 @@ from .config import load_config
 from .io_utils import read_jsonl, write_json, write_jsonl
 from .review_gui import ReviewWindow
 from .render import render_book
-from .translate import translate_book
+from .contextual import translate_v2
 from .workflow import (
-    auto_review_project_glossary, export_project, generate_project_cover,
-    initialize_project, preflight_project, prepare_project, vision_enhance_project,
+    auto_review_project_glossary, confirm_source_project, export_project,
+    generate_project_cover, initialize_project, preflight_project,
+    prepare_project, vision_enhance_project,
 )
 
 
 class SyntheticClient:
     model = "demo-fake-offline-smoke"
 
-    def complete(self, _system: str, user: str) -> tuple[str, dict[str, int]]:
+    def complete_json_text(self, _system: str, user: str) -> tuple[str, dict[str, int]]:
         payload = json.loads(user)
-        rows = [{"id": row["id"], "translated_text": "译：" + row["text"]} for row in payload["segments"]]
-        return json.dumps(rows, ensure_ascii=False), {"prompt_tokens": 0, "completion_tokens": 0}
+        if payload.get("targets") is not None:
+            rows = [[row["n"], "译：" + row["text"]] for row in payload["targets"]]
+            return json.dumps({"t": rows}, ensure_ascii=False), {
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            }
+        target = payload["target"]
+        return json.dumps(
+            {"id": target["id"], "translated_text": "译：" + target["text"]},
+            ensure_ascii=False,
+        ), {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    def complete(self, system: str, user: str) -> tuple[str, dict[str, int]]:
+        return self.complete_json_text(system, user)
 
 
 class SyntheticStructureVisionClient:
@@ -113,8 +125,15 @@ def run_offline_smoke() -> dict[str, Any]:
             prepared = prepare_project(project)
             vision = vision_enhance_project(project, client=SyntheticStructureVisionClient())
             prepared = vision["prepared"]
+            if prepared["status"] != "needs_source_confirmation":
+                raise AssertionError(f"Unexpected source gate: {prepared['status']}")
+            source_markdown = project / "source" / "structured_source.md"
+            if not source_markdown.is_file() or "OCR/PDF 页" not in source_markdown.read_text(encoding="utf-8"):
+                raise AssertionError("Structured source manuscript was not generated")
+            confirmed = confirm_source_project(project)
+            prepared = confirmed["prepared"]
             if prepared["status"] != "needs_glossary_review":
-                raise AssertionError(f"Unexpected first gate: {prepared['status']}")
+                raise AssertionError(f"Unexpected glossary gate: {prepared['status']}")
             candidates = list(read_jsonl(project / "glossary_candidates.jsonl"))
             if not candidates:
                 raise AssertionError("Synthetic sample must exercise the glossary review gate")
@@ -148,7 +167,7 @@ def run_offline_smoke() -> dict[str, Any]:
             config["provider"]["requests_per_minute"] = 0
             write_json(config_path, config)
             loaded = load_config(config_path)
-            translated = translate_book(loaded, SyntheticClient())
+            translated = translate_v2(loaded, SyntheticClient())
             if not translated["ready_to_render"]:
                 raise AssertionError("Synthetic translation did not finish")
             rendered = render_book(loaded)
@@ -170,8 +189,12 @@ def run_offline_smoke() -> dict[str, Any]:
                 "vision_pdf_rendered": bool(
                     ((json.loads((project / "structure" / "vision_structure.json").read_text(encoding="utf-8")).get("scan") or {}).get("image_sources") or {}).get("pdf_render")
                 ),
+                "source_manuscript_generated": True,
+                "source_manuscript_confirmed": True,
                 "glossary_candidates_reviewed": len(candidates),
                 "glossary_review_mode": "llm_auto",
+                "micro_batch_enabled": bool((loaded.get("translation") or {}).get("micro_batch", {}).get("enabled")),
+                "micro_batch_planned": translated.get("planned_micro_batches"),
                 "review_status": compiled["status"],
                 "cover_generated": True, "preflight_requests": 0,
                 "translated_segments": translated["completed_segments"],

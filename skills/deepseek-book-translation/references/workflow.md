@@ -6,6 +6,8 @@ Run commands from `structured-book-translation-pipeline/`. Use absolute paths fo
 
 Inspect enough front matter and contents pages to infer the original title, a provisional Chinese title, author/editor when supported, source language, domain, `book_id`, and a reasonable `toc_search_end`. Keep the author empty when evidence is absent.
 
+For OCR/PDF, ask the user before initialization: after chapter recovery, should the pipeline stop for manual review/fixing of the generated page-marked structured source Markdown? Use `manual` for yes and `auto` for no. This is a workflow preference, not a quality-gate bypass.
+
 ```bash
 python3 new_book.py init \
   --input-json '<OCR_JSON>' \
@@ -16,7 +18,8 @@ python3 new_book.py init \
   --source-lang '<SOURCE_LANGUAGE>' \
   --target-lang '简体中文' \
   --domain '<DOMAIN>' \
-  --toc-search-end '<PAGE_LIMIT>'
+  --toc-search-end '<PAGE_LIMIT>' \
+  --source-confirmation '<manual-or-auto>'
 python3 new_book.py prepare --project '<PROJECT_DIR>'
 
 # OCR/PDF projects: add multimodal structure evidence before human review.
@@ -67,6 +70,34 @@ python3 new_book.py prepare --project '<PROJECT_DIR>'
 
 Repeat only when new evidence-backed packets remain. Do not convert an uncertain packet to `accept` just to clear the gate.
 
+## Structured source manuscript gate
+
+After the OCR structure gate is clear, rerun `prepare`. The pipeline performs a conservative post-structure cross-page paragraph merge and writes:
+
+```text
+<PROJECT_DIR>/source/structured_source.md
+```
+
+The file is a readable original-language book with Markdown heading hierarchy plus 1-based OCR/PDF page markers (or page ranges after a cross-page merge). Hidden `DBT:SEG` anchors map human edits back to stable segments.
+
+In `manual` mode, status becomes `needs_source_confirmation`. Stop here and tell the user exactly which file to review. The user may edit heading text, heading level (`#` depth), and prose. They must not delete or rewrite `DBT:SEG` anchors. Do not continue to glossary or translation until the user says the file is ready. Then run:
+
+```bash
+python3 new_book.py confirm-source --project '<PROJECT_DIR>'
+python3 new_book.py prepare --project '<PROJECT_DIR>'
+```
+
+In `auto` mode the same Markdown artifact is still generated, but it is immediately confirmed and the workflow continues. The mode can be changed before translation with:
+
+```bash
+python3 new_book.py set-source-confirmation --project '<PROJECT_DIR>' --mode auto
+# or --mode manual
+```
+
+After confirmation, the Markdown hash and confirmation state are bound into cleaning provenance. Any later edit re-locks translation until `confirm-source` is run again. The confirmed manuscript—not the original OCR block boundaries—is the source of truth for chapter briefs, terminology matching, micro-batching, and translation.
+
+Native EPUB does not use this editable Markdown gate because the package/DOM slots remain its source of truth.
+
 ## Glossary gate
 
 Once the structure gate is clear, terminology review is automatic by default. With `DEEPSEEK_API_KEY` available, run:
@@ -88,7 +119,11 @@ python3 new_book.py preflight --project '<PROJECT_DIR>'
 python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 10
 ```
 
-The generated configuration selects the contextual v2 translator with bounded 1/1 same-chapter context, a 300-character previous-translation tail, resumable failures, and one public-safe worker. Inspect the ten translations for completeness, terminology, title handling, and structural-token preservation. If they pass, continue cumulatively:
+New OCR/EPUB projects select contextual v2 with bounded 1/1 external same-chapter context, a 300-character previous-translation tail, and structure-aware micro-batching. Normal prose batches contain at most 4 consecutive targets / 6000 source characters; targets never cross chapter/zone boundaries or an already-completed checkpoint. Footnotes/captions use smaller batches, while tables, EPUB attributes/table cells, and dense protected-token segments are singleton. Valid siblings are committed immediately when one target fails; only failed targets are retried, and malformed whole-batch JSON falls back by binary splitting.
+
+The public v0.10 default allows up to 4 independent chapter lanes and does not impose the old fixed 20-RPM pacer; provider 429/network retry/backoff remains bounded. Historical projects with no `translation.micro_batch` field keep singleton behavior until explicitly migrated.
+
+Inspect preflight's `estimated_remaining_requests` and `estimated_targets_per_request`, then inspect the ten translations for completeness, terminology, title handling, structural-token preservation, retry/fallback rate, and cost. If they pass, continue cumulatively:
 
 ```bash
 python3 new_book.py translate --project '<PROJECT_DIR>' --target-completed 100
