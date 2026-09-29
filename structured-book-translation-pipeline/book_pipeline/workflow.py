@@ -597,17 +597,23 @@ def prepare_project(project_path: Path) -> Dict[str, Any]:
     if _is_epub_project(project):
         return _prepare_epub_project(project)
 
-    config = _translation_config(project)
-    source_gate = source_status(config)
-    # Once a reviewable source manuscript exists, repeated prepare calls must
-    # not overwrite it (or a human-confirmed structure) by rerunning chapter
-    # recovery. A stale source/structure pair intentionally falls back to a
-    # fresh deterministic analysis.
+    structure_dir = Path(project["structure_dir"])
+    structure_path = structure_dir / "book_structure.json"
+    # The first OCR prepare must run chapter recovery before load_config(), which
+    # intentionally requires structure_json to exist. Only established projects
+    # can already have a human source manuscript that must be protected.
+    if structure_path.is_file():
+        config = _translation_config(project)
+        source_gate = source_status(config)
+    else:
+        config = None
+        source_gate = {"status": "not_generated", "applicable": True}
     preserve_review_source = source_gate.get("status") in {
         "needs_confirmation", "confirmed", "edited_after_confirmation",
     }
     if not preserve_review_source:
         _run_chapter(project, ["analyze", "--config", project["chapter_config"]])
+    config = _translation_config(project)
 
     structure_dir = Path(project["structure_dir"])
     validation_path = structure_dir / "validation.json"
