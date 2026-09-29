@@ -49,7 +49,14 @@ def _path(config: Dict[str, Any], key: str) -> Path:
 
 
 def applicable(config: Dict[str, Any]) -> bool:
-    return str(config.get("source_adapter") or "") != "epub_native_v1" and bool(config.get("input_json"))
+    # Historical OCR projects predate this gate. Do not silently rewrite their
+    # cleaned-segment source of truth on upgrade; they opt in when a
+    # source_review block is explicitly added (new v0.10 projects always have one).
+    return (
+        str(config.get("source_adapter") or "") != "epub_native_v1"
+        and bool(config.get("input_json"))
+        and isinstance(config.get("source_review"), dict)
+    )
 
 
 def _source_and_structure_hashes(config: Dict[str, Any]) -> Tuple[str, str]:
