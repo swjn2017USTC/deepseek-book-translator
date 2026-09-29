@@ -753,6 +753,7 @@ def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[s
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     return generate_glossary(config, force=force)
 
@@ -778,6 +779,7 @@ def auto_review_project_glossary(
     project = _project_manifest(project_path)
     config = _translation_config(project)
     require_structure_gate(config)
+    require_source_confirmation(config)
     require_fresh_cleaning(config)
     manifest = generate_glossary(config)
     if manifest.get("approved"):
@@ -917,12 +919,32 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
     ]
     contextual = (config.get("translation") or {}).get("context_mode") == "contextual_v2"
     if contextual:
-        estimated_requests = len(pending)
+        from .contextual.batching import build_micro_batches
+        from .contextual.briefs import nodes_index
+        from .contextual.invalidation import brief_key_for_segment
+
+        structure = json.loads(resolve_path(config, "structure_json").read_text(encoding="utf-8"))
+        nodes_by_id = nodes_index(structure)
+        chapter_of = {
+            segment.id: brief_key_for_segment(segment, nodes_by_id)
+            for segment in segments
+            if segment.translatable or segment.source_text.strip()
+        }
+        batches = build_micro_batches(
+            segments, pending, chapter_of, dict(config.get("translation") or {})
+        )
+        estimated_requests = len(batches)
+        estimated_targets_per_request = (
+            round(len(pending) / estimated_requests, 3) if estimated_requests else None
+        )
     else:
         chunk = config.get("chunk", {})
         estimated_requests = len(list(_batches(
             pending, int(chunk.get("max_chars", 10000)), int(chunk.get("max_segments", 20))
         )))
+        estimated_targets_per_request = (
+            round(len(pending) / estimated_requests, 3) if estimated_requests else None
+        )
     status = translation_status(config)
     return {
         "schema_version": 1,
@@ -937,6 +959,8 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
         "remaining_segments": status["remaining_segments"],
         "estimated_remaining_requests": estimated_requests,
         "estimated_remaining_batches": estimated_requests,
+        "estimated_targets_per_request": estimated_targets_per_request,
+        "micro_batch": dict((config.get("translation") or {}).get("micro_batch") or {}) if contextual else None,
         "remaining_translatable_characters": sum(len(segment.source_text) for segment in pending),
     }
 
