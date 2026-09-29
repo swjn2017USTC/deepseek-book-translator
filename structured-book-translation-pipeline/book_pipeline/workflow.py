@@ -820,6 +820,7 @@ def generate_project_glossary(project_path: Path, force: bool = False) -> Dict[s
     config = _translation_config(project)
     require_structure_gate(config)
     require_fresh_cleaning(config)
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
     return generate_glossary(config, force=force)
 
 
@@ -845,6 +846,7 @@ def auto_review_project_glossary(
     config = _translation_config(project)
     require_structure_gate(config)
     require_fresh_cleaning(config)
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
     manifest = generate_glossary(config)
     if manifest.get("approved"):
         return {
@@ -902,6 +904,9 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             glossary_reason = str(exc)
     translation = translation_status(config) if cleaned else None
+    source_review = source_review_state(config, Path(project["project_dir"]).expanduser().resolve()) if cleaned else None
+    source_review_status = str((source_review or {}).get("status") or "")
+    source_review_approved = source_review_status == "approved"
     vision_path = structure_dir / "vision_structure.json"
     vision = None
     if vision_path.is_file():
@@ -924,6 +929,14 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         status = "needs_structure_review"
     elif not cleaned or not fresh:
         status = "needs_prepare"
+    elif not source_review:
+        status = "needs_prepare"
+    elif source_review_status == "awaiting_choice":
+        status = "needs_source_review_choice"
+    elif source_review_status == "awaiting_manual_review":
+        status = "needs_source_review"
+    elif not source_review_approved:
+        status = "needs_source_review"
     elif not glossary_ready:
         status = "needs_glossary_review"
     elif translation and translation["ready_to_render"]:
@@ -950,6 +963,8 @@ def project_status(project_path: Path) -> Dict[str, Any]:
         "compatibility_status": validation.get("compatibility_status"),
         "cleaning_fresh": fresh,
         "stale_reason": stale_reason,
+        "source_review": source_review,
+        "source_review_approved": source_review_approved,
         "glossary_ready": glossary_ready,
         "glossary_reason": glossary_reason,
         "translation": translation,
@@ -963,6 +978,7 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
     config = _translation_config(project)
     require_structure_gate(config)
     require_fresh_cleaning(config)
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
     glossary_sha256 = require_ready_glossary(config)
     cache_sha256 = glossary_sha256 if config.get("glossary_settings", {}).get("bind_translation_cache", False) else ""
     client = OpenAICompatibleClient(dict(config.get("provider") or {}))
@@ -977,8 +993,18 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
         )
     ]
     contextual = (config.get("translation") or {}).get("context_mode") == "contextual_v2"
+    batch_plan = None
     if contextual:
-        estimated_requests = len(pending)
+        from .contextual.orchestrator import _planned_batches, _prepare as _prepare_contextual
+        prepared_contextual = _prepare_contextual(config)
+        pending = [
+            segment for segment in prepared_contextual["segments"]
+            if segment.translatable and not prepared_contextual["current"](segment)
+        ]
+        batches = _planned_batches(prepared_contextual, pending)
+        from .contextual.microbatch import batch_plan_summary
+        batch_plan = batch_plan_summary(batches)
+        estimated_requests = len(batches)
     else:
         chunk = config.get("chunk", {})
         estimated_requests = len(list(_batches(
@@ -998,6 +1024,7 @@ def preflight_project(project_path: Path) -> Dict[str, Any]:
         "remaining_segments": status["remaining_segments"],
         "estimated_remaining_requests": estimated_requests,
         "estimated_remaining_batches": estimated_requests,
+        "micro_batch_plan": batch_plan,
         "remaining_translatable_characters": sum(len(segment.source_text) for segment in pending),
     }
 
@@ -1007,6 +1034,7 @@ def translate_project(project_path: Path, target_completed: Optional[int], all_s
         raise ValueError("Choose an explicit --target-completed value or --all")
     project = _project_manifest(project_path)
     config = _translation_config(project)
+    require_approved_source(config, Path(project["project_dir"]).expanduser().resolve())
     target = None if all_segments else target_completed
     if (config.get("translation") or {}).get("context_mode") == "contextual_v2":
         from .contextual import translate_v2
