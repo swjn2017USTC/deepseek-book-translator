@@ -29,6 +29,7 @@ from ..io_utils import append_jsonl, write_json, write_jsonl
 from ..llm_client import ChatClient, OpenAICompatibleClient, aggregate_usage
 from ..models import Segment
 from ..provenance import require_fresh_cleaning
+from ..source_review import require_approved_source
 from ..translate import SENTENCE_FINISH, _completed, _segments, translation_status
 from .briefs import (
     brief_payload,
@@ -47,7 +48,8 @@ from .invalidation import (
     current_concept_versions,
     is_translation_current_v2,
 )
-from .parser import parse_target_only
+from .microbatch import batch_plan_summary, plan_micro_batches
+from .parser import parse_target_batch
 from .prompts import PROMPTS_VERSION, build_payload, system_prompt
 from .records import record_row
 from .windows import chapter_order, previous_translation_text, window
@@ -93,17 +95,29 @@ def _v2_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     next_segments = int(translation.get("next_segments", 2))
     previous_translation_max_chars = int(translation.get("previous_translation_max_chars", 500))
     max_parse_retries = int(translation.get("max_parse_retries", 3))
+    batch_max_segments = int(translation.get("batch_max_segments", 4))
+    batch_max_chars = int(translation.get("batch_max_chars", 6000))
+    sensitive_batch_max_segments = int(translation.get("sensitive_batch_max_segments", 1))
     if previous_segments < 0 or next_segments < 0:
         raise ValueError("translation.previous_segments/next_segments must be non-negative")
     if previous_translation_max_chars < 0:
         raise ValueError("translation.previous_translation_max_chars must be non-negative")
     if max_parse_retries < 1 or max_parse_retries > 10:
         raise ValueError("translation.max_parse_retries must be between 1 and 10")
+    if batch_max_segments < 1 or batch_max_segments > 16:
+        raise ValueError("translation.batch_max_segments must be between 1 and 16")
+    if batch_max_chars < 256:
+        raise ValueError("translation.batch_max_chars must be >= 256")
+    if sensitive_batch_max_segments < 1:
+        raise ValueError("translation.sensitive_batch_max_segments must be >= 1")
     return {
         "previous_segments": previous_segments,
         "next_segments": next_segments,
         "previous_translation_max_chars": previous_translation_max_chars,
         "max_parse_retries": max_parse_retries,
+        "batch_max_segments": batch_max_segments,
+        "batch_max_chars": batch_max_chars,
+        "sensitive_batch_max_segments": sensitive_batch_max_segments,
         # P09 unattended-run fix: when true, a segment that fails all parse
         # attempts is recorded as an explicit status:'error' row and SKIPPED so
         # the rest of the book still translates; the next run retries it.
@@ -128,6 +142,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
     settings = _v2_settings(config)
     require_structure_gate(config)
     require_fresh_cleaning(config)
+    require_approved_source(config, Path(config["_config_path"]).resolve().parent)
     require_ready_glossary(config)
     glossary_sha256 = glossary_cache_sha(config)
     output_dir = resolve_path(config, "output_dir")
@@ -162,7 +177,7 @@ def _prepare(config: Dict[str, Any]) -> Dict[str, Any]:
     for segment in segments:
         if segment.translatable or segment.source_text.strip():
             chapter_of[segment.id] = brief_key_for_segment(segment, nodes_by_id)
-    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 20))
+    requests_per_minute = float(config.get("provider", {}).get("requests_per_minute", 0))
     delay = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
 
     def current(segment: Segment) -> bool:
