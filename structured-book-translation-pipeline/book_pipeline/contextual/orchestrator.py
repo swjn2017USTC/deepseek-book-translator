@@ -106,7 +106,8 @@ def _v2_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("translation.previous_translation_max_chars must be non-negative")
     if max_parse_retries < 1 or max_parse_retries > 10:
         raise ValueError("translation.max_parse_retries must be between 1 and 10")
-    micro_batch = dict(translation.get("micro_batch") or {})
+    micro_batch = {"enabled": False}
+    micro_batch.update(dict(translation.get("micro_batch") or {}))
     return {
         "previous_segments": previous_segments,
         "next_segments": next_segments,
