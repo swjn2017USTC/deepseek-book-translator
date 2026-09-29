@@ -883,6 +883,10 @@ def test_ladder_skips_non_translatable_empty_segments(tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["segments_sha256"] = _sha(segments_path)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Changing the canonical segment set invalidates the reviewed-source gate by
+    # design; regenerate/approve the review artifact before exercising ladder.
+    render_source_review(config, Path(config["_config_path"]).resolve().parent)
+    choose_source_review(config, Path(config["_config_path"]).resolve().parent, "auto")
     fake = ContextualFakeClient()
     report = run_ladder(config, fake, "10")
     assert report["blocked"] is False
